@@ -146,6 +146,7 @@ def build_body(sp, nt=80, nth=48):
     bm = bmesh.new()
     bm.from_mesh(ob.data)
     bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=1e-6)
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces)  # outward winding, otherwise the body renders inside-out
     bm.to_mesh(ob.data)
     bm.free()
     for poly in ob.data.polygons:
