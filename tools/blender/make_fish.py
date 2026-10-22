@@ -32,7 +32,9 @@ with open(os.path.join(HERE, "species.json"), encoding="utf-8") as fh:
 for _sp in SPECIES.values():
     _sp.setdefault("eye", (0.85, 0.3))
     # scale size relative to body length
-    _sp["scale"] = _sp["L"] * 0.045
+    _sp["scale"] = _sp["L"] * 0.032
+for _k in ("neon", "cory"):  # species with an adipose fin
+    SPECIES[_k]["adipose"] = True
 
 
 def smoothstep(a, b, x):
@@ -165,6 +167,12 @@ def grid(fn, nu, nv):
     return verts, faces, uvs
 
 
+def atlas(part, half):
+    """Fin textures are a 2-part atlas: left half = tail fin, right half = all other fins."""
+    v, f, uv = part
+    return v, f, [(half * 0.5 + u * 0.5, w) for (u, w) in uv]
+
+
 def merge_parts(parts):
     verts, faces, uvs = [], [], []
     for v, f, uv in parts:
@@ -199,9 +207,13 @@ def build_fins(sp):
         def f(u, vv):
             v = vv * 2 - 1
             span = ped + (tl["span"] * 0.5 - ped) * u ** span_pow
-            ruffle = math.sin(v * 9 + u * 5) * 0.014 * u if tl["type"] in ("veil", "double") else math.sin(v * 6) * 0.003 * u
-            return (xs * u * tl["span"] * 0.35 + ruffle, v * span - tl.get("droop", 0) * u * u, tz0 - u * tl["len"] * tail_len(tl["type"], v))
-        return grid(f, 14, 22)
+            soft = tl["type"] in ("veil", "double", "fan")
+            ruffle = math.sin(v * 9 + u * 5) * 0.014 * u if soft else math.sin(v * 6) * 0.003 * u
+            # ray pleats + a slightly frayed trailing edge
+            pleat = math.sin(v * math.pi * 9) * 0.0025 * u * (2.0 if soft else 1.0)
+            fray = 1 + (0.035 * math.sin(v * 37) + 0.02 * math.sin(v * 71)) * u ** 4 * (1.5 if soft else 0.6)
+            return (xs * u * tl["span"] * 0.35 + ruffle + pleat, v * span - tl.get("droop", 0) * u * u, tz0 - u * tl["len"] * tail_len(tl["type"], v) * fray)
+        return atlas(grid(f, 18, 30), 0)
 
     if tl["type"] == "double":
         parts += [tail(1), tail(-1)]
@@ -219,11 +231,13 @@ def build_fins(sp):
                 hh *= 0.65 + 0.35 * abs(math.sin(v * math.pi * 2))
             if cfg.get("follow"):
                 hh = cfg["h"] * math.sin(math.pi * v) ** 0.3
+            if cfg.get("sweep", 0) > 1:  # long trailing filaments (angelfish)
+                hh *= 1 + 0.7 * math.exp(-((v - 0.22) / 0.07) ** 2)
             base = top_at(sp, t) if d > 0 else bot_at(sp, t)
             z = (t - 0.5) * L - u * cfg.get("sweep", 0.3) * cfg["h"] * (1 - v * 0.3)
-            ruffle = math.sin(v * 14) * 0.004 * u
+            ruffle = math.sin(v * 14) * 0.004 * u + math.sin(v * math.pi * 12) * 0.0015 * u
             return (ruffle, base - d * 0.006 + d * u * hh, z)
-        return grid(f, 10, 18)
+        return atlas(grid(f, 10, 22), 1)
 
     parts.append(dorsal_like(sp["dorsal"], 1))
     if sp["dorsal"].get("double"):
@@ -233,7 +247,22 @@ def build_fins(sp):
         for s in (-1, 1):
             def f(u, v, s=s):
                 return (s * 0.012 + (v - 0.5) * 0.014, bot_at(sp, 0.7) - u * sp["streamers"], L * 0.18 - u * u * 0.15)
-            parts.append(grid(f, 10, 2))
+            parts.append(atlas(grid(f, 10, 2), 1))
+    # pelvic fins: a small pair under the belly
+    pv = sp["pect"] * 0.85
+    for s in (-1, 1):
+        t0 = 0.6
+
+        def f(u, v, s=s):
+            base_y = bot_at(sp, t0 - v * 0.06) + 0.004
+            return (s * (0.006 + u * pv * 0.35), base_y - u * pv * 0.55, (t0 - 0.5) * L - v * pv * 0.5 - u * pv * 0.9)
+        parts.append(atlas(grid(f, 6, 6), 1))
+    # adipose fin (tetras, catfish)
+    if sp.get("adipose"):
+        def f(u, v):
+            t = 0.12 + v * 0.07
+            return (0, top_at(sp, t) - 0.003 + u * sp["H"] * 0.18 * math.sin(math.pi * v) ** 0.7, (t - 0.5) * L - u * 0.01)
+        parts.append(atlas(grid(f, 4, 8), 1))
     v, fcs, uv = merge_parts(parts)
     return make_mesh("Fins", v, fcs, uv)
 
@@ -246,7 +275,7 @@ def build_pect(sp, s):
     def f(u, v):
         w = 0.7 + 0.3 * math.sin(math.pi * v)
         return (s * u * P * 0.08, (v - 0.5) * P * 0.8, -u * P * 1.4 * w)
-    verts, faces, uvs = grid(f, 8, 8)
+    verts, faces, uvs = atlas(grid(f, 8, 8), 1)
     ob = make_mesh("PectL" if s < 0 else "PectR", verts, faces, uvs)
     ob.location = to_blender(piv)
     return ob
@@ -335,11 +364,10 @@ def body_colors(name, sp, X, Y, S, U, Z, h, variant=None):
     var = H2C(variant) if variant else None
     shade = 0.12  # how much the scale relief shows in the colour
     if name == "goldfish":
-        orange, white, gold, red = C(1.0, 0.5, 0.02), C(1.0, 0.95, 0.85), C(1.0, 0.78, 0.25), C(1.0, 0.3, 0.02)
-        col = mix(white, orange, (U + 0.55) * 0.95)
-        col = mix(col, gold, np.clip(Z - 0.35, 0, 1) * 1.2 * (0.5 + U * 0.5))
-        col = mix(col, red, smoothstep(0.68, 0.85, n2) * np.clip(U + 0.3, 0, 1) * 0.35)
-        col = mix(col, white, smoothstep(0.7, 0.85, vnoise(X, Y, 5, 7)) * 0.75)
+        orange, belly, gold, red = C(1.0, 0.42, 0.0), C(1.0, 0.7, 0.3), C(1.0, 0.72, 0.12), C(0.95, 0.22, 0.0)
+        col = mix(belly, orange, smoothstep(-0.9, -0.2, U))
+        col = mix(col, gold, np.clip(Z - 0.3, 0, 1) * 1.2 * (0.5 + U * 0.5))
+        col = mix(col, red, smoothstep(0.6, 0.8, n2) * smoothstep(-0.2, 0.6, U) * 0.45)
     elif name == "angelfish":
         silver, back, dark, gold = C(0.9, 0.9, 0.86), C(0.62, 0.6, 0.5), C(0.06, 0.06, 0.07), C(1.0, 0.82, 0.45)
         col = mix(silver, back, (U + 1) * 0.3)
@@ -355,6 +383,8 @@ def body_colors(name, sp, X, Y, S, U, Z, h, variant=None):
     elif name == "guppy":
         col = mix(C(0.79, 0.78, 0.72), C(0.44, 0.46, 0.39), (U + 0.1) * 0.8)
         col = mix(col, var, np.clip(-Z - 0.05, 0, 1) * 1.5)
+        second = np.roll(var, 1) * 0.6 + C(0.4, 0.35, 0.1)
+        col = mix(col, np.clip(second, 0, 1), smoothstep(0.55, 0.75, vnoise(X, Y, 12, 17)) * np.clip(-Z, 0, 1) * 0.8)
         spots = smoothstep(0.66, 0.74, vnoise(X, Y, 30, 11)) * np.clip(-Z, 0, 1)
         col = mix(col, C(0.05, 0.05, 0.06), spots * 0.8)
         col = mix(col, C(0.6, 0.85, 1.0), band(U, 0.1, 0.35, 0.08) * np.clip(Z + 0.2, 0, 1) * 0.35)
@@ -377,7 +407,7 @@ def body_colors(name, sp, X, Y, S, U, Z, h, variant=None):
             col = mix(C(0.12, 0.3, 0.95), C(0.35, 0.6, 1.0), (U + 1) * 0.5)
             col = mix(col, C(0.03, 0.07, 0.3), smoothstep(0.55, 0.75, np.sin(Z * 18) + (n1 - 0.5) * 0.3) * 0.7)
         else:
-            col = mix(C(1.0, 0.95, 0.65), C(1.0, 0.78, 0.05), (U + 0.6) * 0.9)
+            col = mix(C(1.0, 0.97, 0.6), C(1.0, 0.85, 0.0), (U + 0.6) * 0.9)
             col = mix(col, C(0.05, 0.05, 0.05), band(U, 0.78, 0.98, 0.05) * (Z < 0.7) * 0.8)
     elif name == "discus":
         a = var
@@ -393,9 +423,10 @@ def body_colors(name, sp, X, Y, S, U, Z, h, variant=None):
         col = mix(col, C(1.0, 0.23, 0.16), smoothstep(0.9, 0.96, Z) * 0.7)
         col = mix(col, C(1.0, 0.23, 0.16), band(U, 0.85, 1.1, 0.05) * band(Z, 0.0, 0.3, 0.05) * 0.5)
     elif name == "betta":
-        red, blue = C(0.83, 0.08, 0.18), C(0.17, 0.36, 1.0)
-        col = mix(red, blue, np.clip(np.sin(Z * 9 + U * 5 + (n1 - 0.5) * 2), 0, 1) * 0.45)
-        col *= (1 - np.clip(Z - 0.6, 0, 1) * 0.3)[..., None]
+        red, blue, deep = C(0.83, 0.08, 0.18), C(0.17, 0.33, 1.0), C(0.1, 0.12, 0.5)
+        col = mix(blue, red, smoothstep(0.25, -0.65, Z + (n1 - 0.5) * 0.3))
+        col = mix(col, deep, smoothstep(0.4, 1.0, U) * 0.5)
+        col = mix(col, C(0.4, 0.7, 1.0), smoothstep(0.75, 0.9, vnoise(X, Y, 50, 3)) * 0.35 * (Z > -0.3))
         shade = 0.16
     elif name == "rainbow":
         col = mix(C(1.0, 0.82, 0.4), C(0.23, 0.61, 1.0), Z * 0.6 + 0.5)
@@ -405,56 +436,109 @@ def body_colors(name, sp, X, Y, S, U, Z, h, variant=None):
         col = mix(C(0.48, 0.49, 1.0), C(0.79, 0.96, 1.0), (U + 1) * 0.5 + np.sin(Z * 12) * 0.15)
         col = mix(col, C(1, 1, 1), smoothstep(0.8, 0.9, vnoise(X, Y, 40, 31)) * 0.6)
     col = col * (1 - shade + h[..., None] * shade * 2)
-    # mouth line and gill line
-    mouth = np.exp(-((U + 0.15) / 0.12) ** 2) * smoothstep(0.955, 0.985, Y)
-    col *= (1 - 0.55 * mouth)[..., None]
-    gill = np.exp(-((Y - 0.765) / 0.006) ** 2) * (np.abs(U) < 0.75)
-    col *= (1 - 0.2 * gill)[..., None]
+    # --- natural details shared by all species
+    col *= (1 - 0.2 * smoothstep(0.55, 1.0, U))[..., None]                      # darker dorsal ridge
+    col = mix(col, col * 0.45 + 0.55, smoothstep(-0.55, -0.95, U) * 0.22)       # paler belly
+    lat = np.exp(-((U - 0.05) / 0.03) ** 2) * (np.sin(Y * sp["L"] / sp["scale"] * math.pi) > 0.3) * band(Y, 0.12, 0.74, 0.03)
+    col *= (1 - 0.14 * lat)[..., None]                                          # lateral line pores
+    col *= (0.93 + 0.14 * vnoise(X, Y, 64, 9))[..., None]                       # fine mottling
+    edge = Y - (0.775 - 0.035 * (1 - U * U))                                    # gill cover outline
+    opc = (np.abs(U) < 0.85)
+    col *= (1 - 0.3 * np.exp(-((edge + 0.006) / 0.006) ** 2) * opc)[..., None]
+    col += (0.07 * np.exp(-((edge - 0.02) / 0.015) ** 2) * opc)[..., None]
+    mouth = np.exp(-((U + 0.15) / 0.1) ** 2) * smoothstep(0.955, 0.985, Y)     # lips
+    col *= (1 - 0.6 * mouth)[..., None]
+    col = mix(col, col * 0.7 + 0.3, smoothstep(0.975, 0.995, Y) * 0.3)
     return np.clip(col, 0, 1)
 
 
-# fin look per species: base, tip colour, edge colour, base alpha, extras
-FINS = {
-    "goldfish": dict(base="#ff8026", tip="#ffd9a6", alpha=0.85, fade=0.35, rays=14),
-    "angelfish": dict(base="#e0e6e6", tip="#e0e6e6", alpha=0.28, fade=0.1, rays=14, stripes=True),
-    "neon": dict(base="#d9ebf2", tip="#d9ebf2", alpha=0.32, fade=0.12, rays=10),
-    "guppy": dict(base=None, tip=None, alpha=0.85, fade=0.15, rays=18, spots=True),
-    "clown": dict(base="#ff6a00", tip="#ff8a2a", edge="#111111", alpha=0.95, fade=0.05, rays=8),
-    "cory": dict(base="#d9c6a5", tip="#efe3cf", alpha=0.6, fade=0.2, rays=8, spots=True),
-    "cichlid": dict(base=None, tip=None, edge="#111111", alpha=0.9, fade=0.1, rays=10),
-    "discus": dict(base=None, tip=None, alpha=0.85, fade=0.1, rays=12),
-    "barb": dict(base="#ff4430", tip="#ff6a50", edge="#111111", alpha=0.9, fade=0.1, rays=8),
-    "betta": dict(base="#d4142e", tip="#3b6dff", alpha=0.85, fade=0.15, rays=26),
-    "rainbow": dict(base="#ffb04a", tip="#ffd27a", edge="#ff3d6f", alpha=0.75, fade=0.15, rays=10),
-    "moonfish": dict(base="#a9c8ff", tip="#e8f4ff", alpha=0.5, fade=0.25, rays=16),
-}
+def fin_paint(name, tail, Uu, Vv, variant):
+    """Uu: 0 at the fin root .. 1 at the tip, Vv: across the fin."""
+    n = vnoise(Uu, Vv, 9, 5 + tail)
+    nr = 16 if tail else 10
+    rays = np.abs(np.sin(Vv * math.pi * nr + n * 0.8)) ** 8          # bony rays
+    sub_ = np.abs(np.sin(Vv * math.pi * nr * 2 + 1.3)) ** 10 * 0.5   # branching
+    var = H2C(variant) if variant else None
+    tip = Uu ** 0.8
+    if name == "neon":
+        col = mix(C(0.75, 0.85, 0.95), C(0.9, 0.95, 1.0), tip)
+        if tail:
+            col = mix(col, C(1.0, 0.3, 0.35), smoothstep(0.3, 0.0, Uu) * 0.6)
+        alpha = 0.3 - Uu * 0.12
+    elif name == "guppy":
+        second = np.clip(np.roll(var, 1) * 0.6 + C(0.4, 0.35, 0.1), 0, 1)
+        col = mix(var, second, smoothstep(0.45, 0.7, vnoise(Uu, Vv, 7, 13)))
+        col = mix(col, np.clip(var * 1.3, 0, 1), smoothstep(0.75, 1.0, Uu))
+        dots = smoothstep(0.62, 0.7, vnoise(Uu * 2.0, Vv, 26, 41))
+        col = mix(col, C(0.05, 0.05, 0.07), dots * 0.85)
+        alpha = 0.9 - Uu * 0.15
+    elif name == "goldfish":
+        col = mix(C(1.0, 0.45, 0.06), C(1.0, 0.9, 0.78), tip)
+        alpha = 0.85 - Uu * 0.45
+    elif name == "angelfish":
+        col = mix(C(0.82, 0.86, 0.9), C(0.6, 0.7, 0.9), tip)
+        st = smoothstep(0.72, 0.88, np.sin((Uu * 9 if tail else Vv * 7) + n))
+        col = mix(col, C(0.07, 0.07, 0.09), st * 0.9)
+        alpha = 0.3 - Uu * 0.1 + st * 0.45
+    elif name == "clown":
+        col = np.broadcast_to(C(1.0, 0.45, 0.0), Uu.shape + (3,)).copy()
+        col = mix(col, C(0.05, 0.05, 0.05), smoothstep(0.72, 0.84, Uu))
+        col = mix(col, C(1, 1, 1), smoothstep(0.93, 0.99, Uu) * 0.7)
+        alpha = 0.95 - smoothstep(0.85, 1.0, Uu) * 0.3
+    elif name == "cory":
+        col = mix(C(0.82, 0.74, 0.6), C(0.92, 0.88, 0.8), tip)
+        dots = smoothstep(0.55, 0.65, np.sin(Uu * 30) * 0.5 + 0.5) * rays * 2
+        col = mix(col, C(0.2, 0.15, 0.1), np.clip(dots, 0, 1) * 0.8)
+        alpha = 0.5 - Uu * 0.15 + np.clip(dots, 0, 1) * 0.3
+    elif name == "cichlid":
+        if variant.lower() == "#2f6dff":
+            col = mix(C(0.1, 0.25, 0.8), C(0.3, 0.6, 1.0), tip)
+            col = mix(col, C(0.02, 0.02, 0.05), smoothstep(0.7, 0.85, Uu))
+            col = mix(col, C(0.6, 0.85, 1.0), smoothstep(0.93, 0.99, Uu))
+        else:
+            col = mix(C(1.0, 0.82, 0.1), C(1.0, 0.9, 0.4), tip)
+            col = mix(col, C(0.03, 0.03, 0.03), smoothstep(0.55, 0.75, Uu) * (0 if tail else 1))
+        alpha = 0.9 - Uu * 0.1
+    elif name == "discus":
+        b2 = C(0.22, 0.78, 0.85) if variant.lower() == "#ff4a2a" else C(1.0, 0.48, 0.23)
+        col = mix(var, b2, smoothstep(0.3, 0.7, np.sin(Vv * 40 + Uu * 6 + n * 2)))
+        col = mix(col, C(0.3, 0.6, 1.0), smoothstep(0.82, 0.95, Uu))
+        alpha = 0.85 - Uu * 0.1
+    elif name == "barb":
+        if tail:
+            col = mix(C(1.0, 0.75, 0.3), C(1.0, 0.25, 0.15), smoothstep(0.5, 1.0, Uu))
+            alpha = 0.6 - Uu * 0.1 + smoothstep(0.6, 1.0, Uu) * 0.3
+        else:
+            col = mix(C(0.05, 0.05, 0.05), C(1.0, 0.2, 0.12), smoothstep(0.45, 0.75, Uu))
+            alpha = 0.9 - Uu * 0.1
+    elif name == "betta":
+        col = mix(C(0.8, 0.05, 0.15), C(0.55, 0.1, 0.6), smoothstep(0.2, 0.6, Uu))
+        col = mix(col, C(0.15, 0.35, 1.0), smoothstep(0.5, 1.0, Uu + (n - 0.5) * 0.3))
+        alpha = 0.88 - Uu * 0.12
+    elif name == "rainbow":
+        col = mix(C(1.0, 0.75, 0.25), C(1.0, 0.85, 0.4), tip)
+        if tail:
+            col = mix(col, C(0.25, 0.5, 1.0), smoothstep(0.35, 0.0, np.abs(Vv - 0.5)) * 0.5 * (1 - Uu))
+        col = mix(col, C(1.0, 0.22, 0.35), smoothstep(0.78, 0.92, Uu))
+        alpha = 0.75 - Uu * 0.1
+    else:  # moonfish
+        col = mix(C(0.66, 0.78, 1.0), C(0.92, 0.97, 1.0), tip)
+        alpha = 0.5 - Uu * 0.2 + smoothstep(0.9, 1.0, Uu) * 0.3
+    col = col * (1 - 0.16 * rays - 0.06 * sub_)[..., None]
+    alpha = alpha + rays * 0.08
+    alpha = alpha * (0.88 + n * 0.24)
+    alpha *= smoothstep(1.0, 0.92 - n * 0.06, Uu)          # frayed, soft tip
+    alpha *= smoothstep(0.0, 0.04, Vv) * smoothstep(1.0, 0.96, Vv)
+    return np.clip(col, 0, 1), np.clip(alpha, 0, 1)
 
 
 def fin_colors(name, w, h, variant=None):
-    F = FINS[name]
-    x = (np.arange(w) + 0.5) / w
+    x = (np.arange(w // 2) + 0.5) / (w // 2)
     y = (np.arange(h) + 0.5) / h
-    Uu, Vv = np.meshgrid(x, y)  # Uu: base->tip, Vv: across the fin
-    rays = np.abs(np.sin(Vv * math.pi * F["rays"])) ** 6
-    n = vnoise(Uu, Vv, 9, 5)
-    base = H2C(F["base"] or variant)
-    tip = H2C(F["tip"] or variant) * (1.15 if F["tip"] is None else 1.0)
-    col = mix(base, np.clip(tip, 0, 1), Uu ** 0.8)
-    col *= (1 - 0.25 * rays)[..., None]
-    alpha = F["alpha"] - Uu * F["fade"] - rays * 0.03
-    if F.get("stripes"):
-        st = smoothstep(0.75, 0.9, np.sin(Uu * 13 + Vv * 2))
-        col = mix(col, C(0.08, 0.08, 0.1), st * 0.85)
-        alpha = alpha + st * 0.3
-    if F.get("spots"):
-        sp_ = smoothstep(0.68, 0.76, vnoise(Uu, Vv, 22, 41))
-        col = mix(col, C(0.06, 0.06, 0.07), sp_ * 0.7)
-        alpha = alpha + sp_ * 0.1
-    if F.get("edge"):
-        col = mix(col, H2C(F["edge"]), smoothstep(0.8, 0.95, Uu))
-    alpha = alpha * (0.9 + n * 0.2)
-    alpha *= smoothstep(1.0, 0.9 - n * 0.05, Uu)
-    return np.clip(col, 0, 1), np.clip(alpha, 0, 1)
+    Uu, Vv = np.meshgrid(x, y)
+    tc, ta = fin_paint(name, 1, Uu, Vv, variant)
+    oc, oa = fin_paint(name, 0, Uu, Vv, variant)
+    return np.concatenate([tc, oc], axis=1), np.concatenate([ta, oa], axis=1)
 
 
 def save_image(name, rgb, alpha, path, non_color=False):
@@ -510,7 +594,7 @@ def build(name, out_dir, variant=None, key=None):
     pl, pr = build_pect(sp, -1), build_pect(sp, 1)
     build_eye_marker(sp, -1), build_eye_marker(sp, 1)
 
-    W, Hh = 512, 256
+    W, Hh = 1024, 512
     X, Y, S, U, Z = tex_grid(W, Hh)
     hgt = scales_height(sp, X, Y)
     col = body_colors(name, sp, X, Y, S, U, Z, hgt, variant)
@@ -521,7 +605,7 @@ def build(name, out_dir, variant=None, key=None):
     nrm = height_to_normal(hgt, 2.5)
     body_img = save_image(f"{key}_body", col, alpha, os.path.join(tmp, f"{key}_body.png"))
     nrm_img = save_image(f"{key}_body_n", nrm, alpha, os.path.join(tmp, f"{key}_body_n.png"), non_color=True)
-    fcol, falpha = fin_colors(name, 256, 256, variant)
+    fcol, falpha = fin_colors(name, 512, 256, variant)
     fin_img = save_image(f"{key}_fin", fcol, falpha, os.path.join(tmp, f"{key}_fin.png"))
 
     body.data.materials.append(material(f"{key}_body", body_img, nrm_img))

@@ -218,7 +218,8 @@ export function buildFishModel(sp, variant, R) {
 }
 
 // ---------------------------------------------------------------- Blender-made fish
-const EYE_UV = [0.997, 0.997]; // white, flat texel block reserved in every body texture
+const EYE_UV = [0.997, 0.997];
+const IRIS = { neon: '#8fd6ff', guppy: '#d8c070', goldfish: '#e0a030', angelfish: '#d04a2a', clown: '#e07a20', cory: '#b89a60', cichlid: '#ffd040', discus: '#ff3b1f', barb: '#ff5533', betta: '#5a3a80', rainbow: '#e6c060', moonfish: '#b0e8ff' }; // white, flat texel block reserved in every body texture
 
 export function buildAssetFishModel(sp, A) {
   const L = sp.len;
@@ -242,11 +243,13 @@ export function buildAssetFishModel(sp, A) {
     g.translate(pos.x, pos.y, pos.z);
     parts.push(withColor(g, color));
   };
+  // natural eyes: coloured iris ball, big dark pupil, small specular glint
+  const iris = IRIS[sp.id] || '#c9a24a';
   A.eyes.forEach((e, k) => {
-    const s = k === 0 ? -1 : 1, er = e.r, p = e.pos;
-    eyePart(er, 14, 10, sp.redEye ? '#ff5533' : '#f4f1e8', p);
-    eyePart(er * 0.62, 12, 8, '#050505', p.clone().add(new THREE.Vector3(s * er * 0.5, 0, er * 0.12)));
-    eyePart(er * 0.18, 6, 4, '#ffffff', p.clone().add(new THREE.Vector3(s * er * 0.95, er * 0.3, er * 0.25)));
+    const s = k === 0 ? -1 : 1, er = e.r * 0.85, p = e.pos;
+    eyePart(er, 16, 12, iris, p);
+    eyePart(er * 0.62, 14, 10, '#030303', p.clone().add(new THREE.Vector3(s * er * 0.48, 0, er * 0.05)));
+    eyePart(er * 0.13, 6, 4, '#ffffff', p.clone().add(new THREE.Vector3(s * er * 0.98, er * 0.32, er * 0.28)));
   });
   const bodyMat = patchMaterial(new THREE.MeshPhysicalMaterial({
     map: A.bodyMap, normalMap: A.bodyNormal, normalScale: new THREE.Vector2(0.7, 0.7), vertexColors: true,

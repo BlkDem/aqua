@@ -31,7 +31,7 @@ export const SPECIES = {
   guppy: {
     id: 'guppy', title: 'Гуппи', count: 7, len: 0.36, height: 0.11, width: 0.07,
     profile: { headRound: 0.7, taper: 0.45, peduncle: 0.45, hump: 0.0, belly: 0.25 },
-    tail: { type: 'fan', len: 0.26, span: 0.22, droop: 0.02 }, dorsal: { at: [-0.25, 0.05], h: 0.08, sweep: 0.6 }, anal: { at: [-0.3, -0.1], h: 0.03 },
+    tail: { type: 'fan', len: 0.3, span: 0.34, droop: 0.02 }, dorsal: { at: [-0.3, 0.05], h: 0.1, sweep: 0.8 }, anal: { at: [-0.3, -0.1], h: 0.03 },
     pect: 0.04, eye: 0.026,
     variants: ['#ff6a3d', '#ffb21f', '#3f8cff', '#ff3fa4', '#8a5bff', '#28d6a8', '#ff2f2f'],
     texVariants: true,
