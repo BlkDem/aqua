@@ -216,3 +216,68 @@ export function buildFishModel(sp, variant, R) {
 
   return { root, body, bodyMat, finMat, wag, pect, glow };
 }
+
+// ---------------------------------------------------------------- Blender-made fish
+const EYE_UV = [0.997, 0.997]; // white, flat texel block reserved in every body texture
+
+export function buildAssetFishModel(sp, A) {
+  const L = sp.len;
+  const root = new THREE.Group();
+  const wag = { value: new THREE.Vector4(0, sp.swim.amp * L, 0, L) };
+  const glow = sp.glow ? { value: 0 } : null;
+  const pect = { value: 0.55 };
+  const withColor = (g, color) => {
+    const n = g.attributes.position.count, arr = new Float32Array(n * 3), c = new THREE.Color(color);
+    for (let i = 0; i < n; i++) c.toArray(arr, i * 3);
+    g.setAttribute('color', new THREE.BufferAttribute(arr, 3));
+    return g;
+  };
+
+  // body + cartoon eyes in one mesh
+  const parts = [withColor(A.body.clone(), '#ffffff')];
+  const eyePart = (r, ws, hs, color, pos) => {
+    const g = new THREE.SphereGeometry(r, ws, hs);
+    const uv = g.attributes.uv;
+    for (let i = 0; i < uv.count; i++) uv.setXY(i, EYE_UV[0], EYE_UV[1]);
+    g.translate(pos.x, pos.y, pos.z);
+    parts.push(withColor(g, color));
+  };
+  A.eyes.forEach((e, k) => {
+    const s = k === 0 ? -1 : 1, er = e.r, p = e.pos;
+    eyePart(er, 14, 10, sp.redEye ? '#ff5533' : '#f4f1e8', p);
+    eyePart(er * 0.62, 12, 8, '#050505', p.clone().add(new THREE.Vector3(s * er * 0.5, 0, er * 0.12)));
+    eyePart(er * 0.18, 6, 4, '#ffffff', p.clone().add(new THREE.Vector3(s * er * 0.95, er * 0.3, er * 0.25)));
+  });
+  const bodyMat = patchMaterial(new THREE.MeshPhysicalMaterial({
+    map: A.bodyMap, normalMap: A.bodyNormal, normalScale: new THREE.Vector2(0.7, 0.7), vertexColors: true,
+    roughness: 0.3, metalness: 0.05, clearcoat: 0.7, clearcoatRoughness: 0.18,
+    iridescence: sp.irid || 0, iridescenceIOR: 1.35, iridescenceThicknessRange: [200, 600],
+    sheen: 0.4, sheenColor: new THREE.Color('#ffffff'), sheenRoughness: 0.5,
+    emissive: sp.glow ? new THREE.Color('#8fe9ff') : new THREE.Color('#000'), emissiveIntensity: sp.glow ? 0.4 : 0,
+  }), { caustics: 0.55, wag, glow });
+  const body = new THREE.Mesh(mergeGeometries(parts), bodyMat);
+  body.castShadow = true;
+  root.add(body);
+
+  // fins: fixed fins + pectorals (paddled in the shader around their pivots)
+  const fixed = A.fins.clone();
+  fixed.setAttribute('aPect', new THREE.BufferAttribute(new Float32Array(fixed.attributes.position.count * 4), 4));
+  const finGeos = [fixed];
+  A.pects.forEach((pc, k) => {
+    const g = pc.geo.clone(), n = g.attributes.position.count, ap = new Float32Array(n * 4);
+    for (let i = 0; i < n; i++) ap.set([k === 0 ? -1 : 1, pc.pivot.x, pc.pivot.y, pc.pivot.z], i * 4);
+    g.setAttribute('aPect', new THREE.BufferAttribute(ap, 4));
+    finGeos.push(g);
+  });
+  const finMat = patchMaterial(new THREE.MeshPhysicalMaterial({
+    map: A.finMap, transparent: true, side: THREE.DoubleSide, depthWrite: false, roughness: 0.35,
+    iridescence: (sp.irid || 0) * 0.8, iridescenceIOR: 1.3, sheen: 0.5, sheenColor: new THREE.Color('#ffffff'),
+    emissive: sp.glow ? new THREE.Color('#8fb6ff') : new THREE.Color('#000'), emissiveIntensity: sp.glow ? 0.6 : 0,
+  }), { caustics: 0.4, wag, glow, pect });
+  finMat.forceSinglePass = true;
+  const fins = new THREE.Mesh(mergeGeometries(finGeos), finMat);
+  fins.renderOrder = 5;
+  root.add(fins);
+
+  return { root, body, bodyMat, finMat, wag, pect, glow };
+}

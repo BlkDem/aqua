@@ -34,6 +34,7 @@ export const SPECIES = {
     tail: { type: 'fan', len: 0.26, span: 0.22, droop: 0.02 }, dorsal: { at: [-0.25, 0.05], h: 0.08, sweep: 0.6 }, anal: { at: [-0.3, -0.1], h: 0.03 },
     pect: 0.04, eye: 0.026,
     variants: ['#ff6a3d', '#ffb21f', '#3f8cff', '#ff3fa4', '#8a5bff', '#28d6a8', '#ff2f2f'],
+    texVariants: true,
     body: (c, x, y, z, R, v) => {
       const base = C('#c9c7b8');
       const pal = C(v);
@@ -129,6 +130,7 @@ export const SPECIES = {
     tail: { type: 'round', len: 0.16, span: 0.18 }, dorsal: { at: [-0.45, 0.4], h: 0.09, sweep: 0.3 }, anal: { at: [-0.45, -0.1], h: 0.1, sweep: 0.5 },
     pect: 0.08, eye: 0.04,
     variants: ['#2f6dff', '#ffd21f'],
+    texVariants: true,
     body: (c, x, y, z, R, v) => {
       const base = C(v), dark = C('#0b1640');
       let col = base.clone().offsetHSL(0, 0, (y) * 0.08);
@@ -147,6 +149,7 @@ export const SPECIES = {
     tail: { type: 'fan', len: 0.12, span: 0.15 }, dorsal: { at: [-0.75, 0.55], h: 0.06, sweep: 0.1, follow: true }, anal: { at: [-0.75, 0.45], h: 0.06, follow: true },
     pect: 0.06, eye: 0.04, redEye: true,
     variants: ['#ff4a2a', '#2ad4c8'],
+    texVariants: true,
     body: (c, x, y, z, R, v) => {
       const a = C(v), b = v === '#ff4a2a' ? C('#38c6d8') : C('#ff7a3a');
       const w = Math.sin(y * 22 + Math.sin(z * 9) * 2.0);

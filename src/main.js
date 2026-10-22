@@ -11,6 +11,8 @@ import { buildPost } from './fx/post.js';
 import { Director } from './fx/director.js';
 import { AquaAudio } from './fx/audio.js';
 import { Ecosystem } from './life/ecosystem.js';
+import { loadFishAssets } from './life/fishAssets.js';
+import { SPECIES } from './life/species.js';
 import { UI } from './ui/ui.js';
 
 // ------------------------------------------------------------------ renderer
@@ -84,6 +86,7 @@ scene.updateMatrixWorld(true);
 const bubbles = new Bubbles(scene);
 const dust = buildDust(scene);
 const rays = buildGodRays(scene);
+await loadFishAssets(Object.values(SPECIES).flatMap((sp) => (sp.texVariants ? sp.variants.map((_, k) => `${sp.id}-${k}`) : [sp.id])));
 const eco = new Ecosystem(scene, decor, plants, bubbles, tank);
 finishMoss(plants, eco);
 // bake static scenery into a handful of meshes (draw calls are the main cost)

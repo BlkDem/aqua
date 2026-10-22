@@ -1,5 +1,6 @@
 import * as THREE from 'three';
-import { buildFishModel } from './fishModel.js';
+import { buildFishModel, buildAssetFishModel } from './fishModel.js';
+import { ASSETS } from './fishAssets.js';
 import { rand, pick, clamp, mulberry32 } from '../fx/shaderPatch.js';
 
 const V = () => new THREE.Vector3();
@@ -29,7 +30,8 @@ export class Fish {
     this.scale = 0.85 + R() * 0.3;
     this.size = sp.len * this.scale;
     // --- visual ---
-    const model = buildFishModel(sp, variant, R);
+    const asset = ASSETS[sp.texVariants ? `${sp.id}-${idx % sp.variants.length}` : sp.id];
+    const model = asset ? buildAssetFishModel(sp, asset) : buildFishModel(sp, variant, R);
     Object.assign(this, { root: model.root, body: model.body, wag: model.wag, pect: model.pect, glowU: model.glow, bodyMat: model.bodyMat, finMat: model.finMat });
     this.root.scale.setScalar(this.scale);
     this.body.userData.fish = this;
