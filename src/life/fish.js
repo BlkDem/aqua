@@ -41,6 +41,17 @@ export class Fish {
     this.vel = new THREE.Vector3(rand(-1, 1), 0, rand(-1, 1)).setLength(sp.swim.cruise * 0.5);
     this.heading = this.vel.clone().normalize();
     this.yawRate = 0;
+    this.pitch = 0;
+    this.wantDir = this.heading.clone();
+    this.tail = 0.5; // tail-beat intensity, 1 = cruise
+    this.pectF = 0;
+    this.pectBrake = 0;
+    this.pectS = 0; // smoothed for the fin animation
+    this.pectB = 0;
+    // peak-to-peak tail-tip excursion at cruise: peduncle sway plus the part of the caudal fin
+    // that swings with it (long soft tails mostly trail)
+    // slow cruisers (under ~1.5 body lengths/s) keep fanning their pectorals all the time
+    this.idleScull = 0.35 * clamp(1 - sp.swim.cruise / sp.len / 1.5, 0, 1);
     this.phase = R() * 10;
     this.finPhase = R() * 10;
     this.burstT = rand(0, 2);
@@ -139,7 +150,11 @@ export class Fish {
         if (o.size > this.size * 2.0 || o.state === 'DEFEND' && o.ctx.target === this) {
           const d = this.dist(o);
           const r = o.size * 1.2 + 0.25;
-          if (d < r && (o.vel.length() > o.sp.swim.cruise * 0.6 || P.shyness > 0.5)) {
+          // startle only when the big fish is actually closing in; a big fish just passing by
+          // is calmly given way to by the steering (see steer)
+          const closing = d > 1e-4 ? ((this.pos.x - o.pos.x) * o.vel.x + (this.pos.y - o.pos.y) * o.vel.y + (this.pos.z - o.pos.z) * o.vel.z) / d : 0;
+          const attacked = o.state === 'DEFEND' && o.ctx.target === this;
+          if (d < r && (attacked || closing > o.sp.swim.cruise * (0.9 - P.shyness * 0.4))) {
             this.flee(o.pos, 0.6 + P.shyness * 0.8, o);
             if (sp.school > 0.6 && Math.random() < 0.06) eco.story('scatter', `Стайка «${sp.title}» расступилась перед ${o.name}`, this.pos, { cooldown: 40 });
             return;
@@ -369,7 +384,12 @@ export class Fish {
     this.face = null;
     switch (this.state) {
       case 'IDLE': {
-        if (!c.point || this.pos.distanceTo(c.point) < 0.3) c.point = this.randomPointNear(this.pos, 1.3);
+        // leisurely wandering: the next waypoint lies roughly ahead and is picked before the
+        // current one is reached, so the path flows instead of zig-zagging point to point
+        if (!c.point || this.pos.distanceTo(c.point) < Math.max(0.35, this.size * 2.5)) {
+          _a.copy(this.heading).setY(0).normalize().multiplyScalar(rand(0.8, 1.6)).add(this.pos);
+          c.point = this.randomPointNear(_a, 0.7);
+        }
         g.copy(c.point); spd = 0.45;
         break;
       }
@@ -677,12 +697,73 @@ export class Fish {
 
     const maxA = S.accel * (this.state === 'FLEE' ? 2.2 : 1) * (this.burst > 0 ? 1.6 : 1);
     if (acc.length() > maxA) acc.setLength(maxA);
-    this.vel.addScaledVector(acc, dt);
+    // --- locomotion physics. Only fins move the fish:
+    //  * the tail pushes along the body axis, thrust ~ (beat intensity)^2, so steady speed ~ intensity;
+    //  * pectorals give a weak force in any direction (hovering, fine positioning, braking, backing up);
+    //  * water drag is low along the body and strong sideways/vertically, so a fish cannot slide
+    //    off its axis or keep moving without beating.
+    // The tail animation is driven by the same intensity (this.tail), so motion and fins agree.
+    const flee = this.state === 'FLEE' ? 2 : 1;
     const maxV = S.max * (this.state === 'FLEE' || this.state === 'DEFEND' || this.state === 'EAT' ? 1 : 0.75);
-    if (this.vel.length() > maxV) this.vel.setLength(maxV);
-    this.vel.y = clamp(this.vel.y, -this.vel.length() * 0.6 - 0.05, this.vel.length() * 0.6 + 0.05);
-    // gentle drag when hovering
-    if (mul < 0.2) this.vel.multiplyScalar(1 - dt * 1.5);
+    const h = this.heading;
+    let fwd = this.vel.dot(h);
+    const speed = Math.max(0, fwd);
+    // where the fish wants to go: the velocity it is asking for, low-passed so that
+    // flickering steering forces don't twitch the body
+    _a.copy(this.vel).addScaledVector(acc, 0.6);
+    const wantSpeed = Math.min(_a.length(), maxV) * (mul < 0.2 ? 0.5 : 1);
+    if (this.face) _a.copy(this.face).sub(this.pos);
+    if (_a.lengthSq() > 1e-6) {
+      _a.normalize();
+      _a.y = clamp(_a.y * clamp(speed / (S.cruise * 0.5), 0.15, 1), -0.5, 0.5); // hovering fish level out
+      this.wantDir.lerp(_a, 1 - Math.exp(-dt * 3 * flee)).normalize();
+    }
+    const w = this.wantDir;
+    // yaw: critically damped turn, rate limited (tight turns need some speed)
+    const yaw = Math.atan2(h.x, h.z);
+    let err = Math.atan2(w.x, w.z) - yaw;
+    if (err > Math.PI) err -= Math.PI * 2;
+    if (err < -Math.PI) err += Math.PI * 2;
+    const om = S.turn * flee;
+    const maxRate = om * 0.6 * (0.35 + 0.65 * clamp(speed / S.cruise, 0, 1));
+    this.yawRate = clamp(this.yawRate + (om * om * err - 2 * om * this.yawRate) * dt, -maxRate, maxRate);
+    const ny = yaw + this.yawRate * dt;
+    this.pitch += (Math.asin(clamp(w.y, -1, 1)) - this.pitch) * (1 - Math.exp(-dt * om * 0.5));
+    h.set(Math.sin(ny) * Math.cos(this.pitch), Math.sin(this.pitch), Math.cos(ny) * Math.cos(this.pitch));
+    // wanted forward speed: slower in sharp turns; when the goal lies inside the turning circle
+    // the fish almost stops and pivots instead of orbiting it
+    const facing = Math.max(0, h.dot(w));
+    const turnR = speed / Math.max(maxRate, 0.05);
+    const tight = clamp((2.2 * turnR) / Math.max(dist, 1e-3), 0, 1);
+    const target = wantSpeed * (0.25 + 0.75 * facing * facing) * (1 - tight * (1 - facing) * 0.9);
+    // tail: beat intensity (1 = cruise) chosen to reach the target speed; muscles ramp up quickly
+    // (faster for bursts and escapes) and relax a little slower -> coasting between beats
+    fwd = this.vel.dot(h);
+    const aWant = clamp(target / S.cruise + 1.2 * (target - fwd) / S.cruise, 0, (maxV / S.cruise) * 1.1);
+    const ramp = aWant > this.tail ? (this.burst > 0 || flee > 1 ? 14 : 5) : 4;
+    this.tail += (aWant - this.tail) * (1 - Math.exp(-dt * ramp));
+    const T0 = S.accel * 0.6; // thrust (per unit mass) at cruise intensity
+    const thrust = T0 * this.tail * this.tail;
+    // pectorals: what the tail can't do, weakly. Sideways/vertical sculling only near hover (on the
+    // move the fish turns with its body), braking only once the tail has stopped pushing.
+    _b.copy(w).multiplyScalar(target).sub(this.vel).multiplyScalar(2);
+    const along = _b.dot(h);
+    const slow = clamp(1 - fwd / (S.cruise * 0.4), 0, 1);
+    _b.addScaledVector(h, -along).multiplyScalar(0.1 + 0.9 * slow);
+    if (along < 0) _b.addScaledVector(h, along * clamp((0.5 - this.tail) / 0.3, 0, 1));
+    const pMax = T0 * 0.22;
+    if (_b.length() > pMax) _b.setLength(pMax);
+    this.pectF = _b.length() / pMax;
+    this.pectBrake = clamp(-_b.dot(h) / pMax, 0, 1);
+    this.vel.addScaledVector(h, thrust * dt).addScaledVector(_b, dt);
+    // drag: quadratic + a little linear along the body; sideways/vertical much stronger
+    fwd = this.vel.dot(h);
+    _c.copy(this.vel).addScaledVector(h, -fwd);
+    const cAx = T0 / (S.cruise * S.cruise);
+    fwd *= Math.exp(-dt * (cAx * Math.abs(fwd) + 0.25));
+    _c.multiplyScalar(Math.exp(-dt * (2.5 + 4 * clamp(Math.abs(fwd) / S.cruise, 0, 1))));
+    this.vel.copy(h).multiplyScalar(fwd).add(_c);
+    if (this.vel.length() > maxV * 1.15) this.vel.setLength(maxV * 1.15);
     this.pos.addScaledVector(this.vel, dt);
     // hard limits
     this.pos.x = clamp(this.pos.x, -BOUNDS.x - 0.1, BOUNDS.x + 0.1);
@@ -695,23 +776,6 @@ export class Fish {
   animate(dt) {
     const sp = this.sp, S = sp.swim;
     const speed = this.vel.length();
-    _a.copy(this.vel);
-    if (this.face) _a.copy(this.face).sub(this.pos);
-    else if (speed < 0.04) _a.copy(this.heading);
-    _a.normalize();
-    // smooth heading
-    const prevYaw = Math.atan2(this.heading.x, this.heading.z);
-    const k = 1 - Math.exp(-S.turn * dt * (this.state === 'FLEE' ? 2 : 1));
-    this.heading.lerp(_a, k);
-    this.heading.y = clamp(this.heading.y, -0.55, 0.55);
-    if (this.heading.lengthSq() < 1e-6) this.heading.set(0, 0, 1);
-    this.heading.normalize();
-    const yaw = Math.atan2(this.heading.x, this.heading.z);
-    let dy = yaw - prevYaw;
-    if (dy > Math.PI) dy -= Math.PI * 2;
-    if (dy < -Math.PI) dy += Math.PI * 2;
-    this.yawRate += (dy / Math.max(dt, 1e-3) - this.yawRate) * Math.min(1, dt * 6);
-
     _m.lookAt(this.heading, ZERO, UP);
     _q.setFromRotationMatrix(_m);
     let roll = clamp(-this.yawRate * 0.12, -0.5, 0.5);
@@ -721,12 +785,15 @@ export class Fish {
     this.root.quaternion.slerp(_q, 1 - Math.exp(-10 * dt));
     this.root.position.copy(this.pos);
 
-    // tail undulation
+    // tail undulation: the same intensity that produces thrust. Frequency grows with intensity
+    // (and so with speed); amplitude saturates. Turning on the spot takes a few tail sweeps too.
     const rel = speed / S.cruise;
-    let freq = S.freq * (0.3 + Math.min(rel, 2.2) * 0.75) * (this.burst > 0 ? 1.5 : 1);
-    let amp = S.amp * sp.len * (0.35 + Math.min(rel, 1.8) * 0.55);
-    if (S.glide) amp *= 0.45 + 0.55 * Math.max(0, Math.sin(this.eco.time * 0.9 + this.idx * 2));
-    if (S.burst > 0 && this.burst <= 0 && rel < 1.2) amp *= 0.55;
+    const spin = Math.min(1, Math.abs(this.yawRate) / (S.turn * 0.6)) * 0.5 * clamp(1 - rel, 0, 1);
+    const act = Math.max(this.tail, spin);
+    // Bainbridge: tail-beat frequency f ≈ 1.33·(1 + U/L) Hz, it never drops much below ~1.3 Hz;
+    // at low speed the stroke gets smaller instead
+    let freq = Math.PI * 2 * 1.33 * (1 + act * S.cruise / sp.len);
+    let amp = S.amp * sp.len * (0.15 + 0.85 * Math.min(act / 0.6, 1));
     if (S.wiggle) amp *= 1.2;
     if (this.flare > 0) { freq *= 1.6; amp *= 1 + this.flare * 0.8; this.flare = Math.max(0, this.flare - dt * 0.7); }
     if (this.state === 'REST' && this.eco.night > 0.6 && !sp.nocturnal) { freq *= 0.4; amp *= 0.5; }
@@ -734,10 +801,15 @@ export class Fish {
     const W = this.wag.value;
     W.x = this.phase;
     W.y += (amp - W.y) * Math.min(1, dt * 4);
-    W.z += (clamp(-this.yawRate * 0.9, -2.2, 2.2) / sp.len - W.z) * Math.min(1, dt * 5);
-    // pectorals paddle (faster when hovering)
-    this.finPhase += dt * (speed < 0.2 ? 7 : 4);
-    this.pect.value = 0.55 + Math.sin(this.finPhase) * (speed < 0.2 ? 0.45 : 0.2) + this.flare * 0.5;
+    // turning bends the body into a gentle C: tail tip offset up to ~15% of the length
+    W.z += (0.6 * clamp(-this.yawRate / 3, -1, 1) / sp.len - W.z) * Math.min(1, dt * 5);
+    // pectorals: they scull while hovering and whenever they produce force, and flare to brake
+    const hover = clamp(1 - rel * 2.5, 0, 1);
+    this.pectS += (Math.max(hover * 0.6, this.pectF, this.idleScull) - this.pectS) * Math.min(1, dt * 3);
+    this.pectB += (this.pectBrake - this.pectB) * Math.min(1, dt * 3);
+    const scull = this.pectS, brake = this.pectB;
+    this.finPhase += dt * (4 + scull * 6);
+    this.pect.value = 0.35 + hover * 0.25 + brake * 0.6 + Math.sin(this.finPhase) * (0.12 + scull * 0.45) + this.flare * 0.5;
     // gulp
     if (this.gulp > 0) {
       this.gulp = Math.max(0, this.gulp - dt * 3);

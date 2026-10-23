@@ -44,7 +44,7 @@ export const SPECIES = {
       c.copy(col);
     },
     finFromVariant: true, finOpacity: 0.75, irid: 0.5,
-    swim: { cruise: 0.6, max: 1.9, freq: 12, amp: 0.06, accel: 3.5, turn: 4.5, burst: 0.4 },
+    swim: { cruise: 0.6, max: 1.9, freq: 12, amp: 0.05, accel: 3.5, turn: 4.5, burst: 0.4 },
     school: 0.45, zone: [2.6, 5.3], social: 0.7,
     traits: { activity: 0.75, bravery: 0.5, curiosity: 0.6, playfulness: 0.8, shyness: 0.3, aggression: 0.1, gluttony: 0.7, territoriality: 0.0 },
   },
@@ -62,7 +62,7 @@ export const SPECIES = {
       c.copy(col);
     },
     fin: C('#ffb260'), finOpacity: 0.62, irid: 0.2,
-    swim: { cruise: 0.42, max: 1.3, freq: 4.2, amp: 0.13, accel: 1.4, turn: 1.8, burst: 0 },
+    swim: { cruise: 0.42, max: 1.3, freq: 4.2, amp: 0.1, accel: 1.4, turn: 1.8, burst: 0 },
     school: 0, zone: [1.2, 4.8], social: 0.6, big: true,
     traits: { activity: 0.5, bravery: 0.8, curiosity: 0.6, playfulness: 0.5, shyness: 0.1, aggression: 0.15, gluttony: 1.0, territoriality: 0.0 },
   },
@@ -190,7 +190,7 @@ export const SPECIES = {
       c.copy(col.offsetHSL(0, 0, -Math.max(0, z - 0.6) * 0.15));
     },
     finFromVariant: true, finGradient: C('#3b6dff'), finOpacity: 0.78, irid: 1.0,
-    swim: { cruise: 0.25, max: 1.2, freq: 3.0, amp: 0.06, accel: 1.6, turn: 2.8, burst: 0 },
+    swim: { cruise: 0.25, max: 1.2, freq: 3.0, amp: 0.05, accel: 1.6, turn: 2.8, burst: 0 },
     school: 0, zone: [3.2, 5.3], social: 0.1,
     traits: { activity: 0.35, bravery: 0.9, curiosity: 0.6, playfulness: 0.2, shyness: 0.1, aggression: 0.7, gluttony: 0.7, territoriality: 0.9 },
   },

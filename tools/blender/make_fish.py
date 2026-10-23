@@ -52,7 +52,11 @@ def profile(sp, t):
         return np.where(t < 0.12, np.maximum(r, p["peduncle"]), r)
     peak = 0.6 if p.get("diamond") else 0.57
     u_head = np.clip((t - peak) / (1 - peak), 0, 1)
-    head = np.power(np.maximum(0, 1 - u_head ** 2), 0.35 + 0.45 * (1 - p["headRound"]))
+    # blend a round (elliptic) head with a tapering snout: cos() ends with a finite slope -> pointed nose
+    round_head = np.power(np.maximum(0, 1 - u_head ** 2), 0.5)
+    snout = np.cos(u_head * np.pi / 2) * (1 - 0.15 * u_head)
+    k = 0.35 + 0.55 * (1 - p["headRound"])
+    head = round_head * (1 - k) + snout * k
     u_tail = np.clip((peak - t) / peak, 0, 1)
     e = 0.8 if p.get("diamond") else 1.25 - p["taper"] * 0.5
     tail = 1 - (1 - p["peduncle"]) * np.power(u_tail, e)
@@ -63,7 +67,9 @@ def profile(sp, t):
 
 
 def center_y(sp, t):
-    return sp["prof"].get("hump", 0) * sp["H"] * np.sin(np.pi * t) * 0.5
+    # the forehead slopes down to a mouth that sits a little below the body axis
+    snout_drop = 0.09 * sp["H"] * smoothstep(0.62, 1.0, t)
+    return sp["prof"].get("hump", 0) * sp["H"] * np.sin(np.pi * t) * 0.5 - snout_drop
 
 
 def body_point(sp, t, th):
@@ -77,7 +83,10 @@ def body_point(sp, t, th):
     if p.get("flatBelly"):
         y = max(y, -H * 0.32 * r)
     y += float(center_y(sp, t))
-    x = side * r * W * 0.5 * (1 - max(0.0, up) * 0.25)
+    # laterally compressed: the back narrows to a ridge, the belly to a keel, and the
+    # caudal peduncle is a thin vertical blade rather than a round tube
+    compress = 0.45 + 0.55 * float(smoothstep(0.04, 0.5, t))
+    x = side * r * W * 0.5 * compress * (1 - 0.32 * max(0.0, up) ** 2 - 0.12 * max(0.0, -up) ** 2)
     # mouth notch: a small inward crease near the nose, just below the midline
     if t > 0.93:
         k = math.exp(-((up + 0.15) / 0.18) ** 2) * (t - 0.93) / 0.07
@@ -131,7 +140,7 @@ def build_body(sp, nt=80, nth=48):
             faces.append((a, a + 1, a + row + 1, a + row))
     # nose tip & tail cap
     nose = len(verts)
-    verts.append((0.0, float(center_y(sp, 1.0)) - sp["H"] * 0.02, sp["L"] / 2))
+    verts.append((0.0, float(center_y(sp, 1.0)), sp["L"] / 2))
     uvs.append((0.5, 1.0))
     last = (nt - 1) * row
     for j in range(nth):

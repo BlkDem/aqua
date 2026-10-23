@@ -62,26 +62,78 @@ ${opts.pect ? 'uniform float uPect; attribute vec4 aPect;' : ''}
     sh.vertexShader = head + sh.vertexShader;
 
     if (wag) {
+      // The fish bends around a spine running along -Z. Cross-sections rotate with the spine
+      // tangent (normals too, so the bend reads in the lighting); behind the peduncle the
+      // caudal fin is a plate that pivots and flexes, keeping its length instead of shearing.
+      sh.vertexShader = sh.vertexShader.replace('void main() {', `
+const float FISH_K = 5.4; // wave number * L: a bit over one body length per wave
+// lateral spine offset at z and its slope along the swimming axis (u = -z)
+vec2 fishSpine(float z, float lag) {
+  float L = uWag.w, k = FISH_K / L;
+  float s = clamp((L * 0.5 - z) / L, 0.0, 1.0);
+  // carangiform envelope: slight head recoil, still point at ~1/5 L, largest at the tail
+  float env = 0.12 - 0.6 * s + 1.48 * s * s;
+  float denv = (-0.6 + 2.96 * s) * (-1.0 / L);
+  float a = uWag.x + k * z - lag; // the crest travels nose -> tail
+  float zb = min(z, 0.0);
+  float x = uWag.y * env * sin(a) + uWag.z * zb * zb;
+  float dxdz = uWag.y * (denv * sin(a) + env * k * cos(a)) + 2.0 * uWag.z * zb;
+  return vec2(x, -dxdz);
+}
+// finU: 0 at a fin's root .. 1 at its tip (-1 for the body), finTail: 1 on the caudal fin
+float fishAngle(float lag) { return clamp(atan(fishSpine(-0.47 * uWag.w, lag).y), -0.7, 0.7); }
+vec3 fishBend(vec3 p, inout vec3 n, float finU, float finTail) {
+  float L = uWag.w, zP = -0.47 * L, k = FISH_K / L;
+  vec2 sp = fishSpine(max(p.z, zP), 0.0);
+  float phi = clamp(atan(sp.y), -0.6, 0.6);
+  vec3 q;
+  if (p.z < zP) {
+    // caudal fin hinged at the peduncle. The soft rays lag behind the peduncle more and more
+    // towards the tip, so a wave runs down the fin and long veil tails flow like cloth
+    float d = zP - p.z;
+    float u = finTail > 0.5 ? finU : clamp(d / (0.3 * L), 0.0, 1.0);
+    float phiM = fishAngle(0.8 * u) * (1.0 - 0.15 * u), phiE = fishAngle(1.6 * u) * (1.0 - 0.3 * u);
+    q = vec3(sp.x + d * sin(phiM) + p.x * cos(phiE), p.y, zP - d * cos(phiM) + p.x * sin(phiE));
+    phi = phiE;
+  } else {
+    q = vec3(sp.x + p.x * cos(phi), p.y, p.z + p.x * sin(phi));
+  }
+  if (finU > 0.0) {
+    // soft fins never hold still: a ripple runs from root to tip (harmonic of the tail beat plus
+    // a slow drift), growing towards the free edge
+    float fl = sin(2.0 * uWag.x - finU * 5.0 + p.y * 4.0 / L) * 0.6
+             + sin(uTime * 3.1 + uWag.x * 0.37 - finU * 3.0 + p.z * 9.0 / L) * 0.4;
+    q.x += fl * pow(finU, 1.4) * (0.012 * L + 0.3 * uWag.y) * cos(phi);
+  }
+  float c = cos(phi), si = sin(phi);
+  n = vec3(c * n.x - si * n.z, n.y, si * n.x + c * n.z);
+  return q;
+}
+void main() {`);
       sh.vertexShader = sh.vertexShader.replace(
-        '#include <begin_vertex>',
-        `#include <begin_vertex>
+        '#include <beginnormal_vertex>',
+        `#include <beginnormal_vertex>
+        vec3 fishPos = position;
         ${opts.pect ? `
         if (aPect.x != 0.0) {
           // pectoral fin paddling: rotate around the fin root (Y), then tilt (X)
-          vec3 p = transformed - aPect.yzw;
+          vec3 p = fishPos - aPect.yzw;
           float a = aPect.x * uPect;
-          p.xz = mat2(cos(a), -sin(a), sin(a), cos(a)) * p.xz;
-          p.yz = mat2(cos(0.3), sin(0.3), -sin(0.3), cos(0.3)) * p.yz;
-          transformed = p + aPect.yzw;
+          mat2 ry = mat2(cos(a), -sin(a), sin(a), cos(a)), rx = mat2(cos(0.3), sin(0.3), -sin(0.3), cos(0.3));
+          p.xz = ry * p.xz; p.yz = rx * p.yz;
+          objectNormal.xz = ry * objectNormal.xz; objectNormal.yz = rx * objectNormal.yz;
+          fishPos = p + aPect.yzw;
         }` : ''}
-        {
-          float L = uWag.w;
-          float zt = clamp((L * 0.18 - transformed.z) / (L * 0.9), 0.0, 1.6);
-          float w = sin(uWag.x - transformed.z * 5.5 / L);
-          float zb = min(transformed.z, 0.0);
-          transformed.x += w * uWag.y * zt * zt + uWag.z * zb * zb;
-          transformed.y += sin(uWag.x * 0.5 + transformed.z * 3.0 / L) * uWag.y * 0.08 * zt;
-        }`
+        ${opts.pect ? `
+        // fin atlas: left half of U = caudal fin, right half = other fins; U runs root -> tip
+        float finTail = step(uv.x, 0.5);
+        float finU = finTail > 0.5 ? uv.x * 2.0 : uv.x * 2.0 - 1.0;` : 'float finU = -1.0, finTail = 0.0;'}
+        fishPos = fishBend(fishPos, objectNormal, finU, finTail);`
+      );
+      sh.vertexShader = sh.vertexShader.replace(
+        '#include <begin_vertex>',
+        `#include <begin_vertex>
+        transformed = fishPos;`
       );
     }
 

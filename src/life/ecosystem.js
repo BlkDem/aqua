@@ -390,7 +390,7 @@ export class Ecosystem {
         const c = s.target.clone();
         s.goal.set(-c.x * 0.8, c.y, -c.z * 0.5);
         s.target.copy(s.goal); s.next = this.time + 8;
-        for (const f of this.fish) if (f.sp === s.sp && !f.hidden) { f.vel.multiplyScalar(-0.6); f.burst = 0.3; f.setState('SCHOOL'); }
+        for (const f of this.fish) if (f.sp === s.sp && !f.hidden) { f.vel.multiplyScalar(0.3); f.burst = 0.3; f.setState('SCHOOL'); }
         this.story('school-turn', `Вся стая «${s.sp.title}» синхронно развернулась!`, c, { rare: true, cooldown: 200 });
       }],
       [0.8, 'watcher', () => {
