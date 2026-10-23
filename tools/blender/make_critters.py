@@ -4,7 +4,7 @@ Generates the aquarium's crab and snails as GLB files for the Living Aquarium.
 Run headless:
   blender -b -P tools/blender/make_critters.py -- <out_dir> [asset ...]
 
-Assets: crab, snail-mystery, snail-nerite, snail-ramshorn.
+Assets: crab, snail-mystery, snail-nerite, snail-ramshorn, shrimp.
 
 Every critter is a small hierarchy of rigid parts whose origins sit at the joints, so the game
 can bend them (src/life/critters.js draws them as one skinned mesh with the parts as bones).
@@ -715,11 +715,166 @@ def build_snail(kind):
     export("snail-" + kind, body)
 
 
+# ----------------------------------------------------------------------------- shrimp
+def mat_shrimp_shell(name):
+    """Pale translucent shell with fine darker speckles; the colour (cherry, blue, yellow...) is
+    multiplied over it in the game, so it is kept light."""
+    t = NT(name)
+    n = t.noise(t.vec(), 160, detail=4)
+    col = t.ramp(n, [(0.35, C("#d9cbc0")), (0.7, C("#f3ece6"))])
+    sp = t.voronoi(t.vec(), 420, out="Distance")
+    col = t.mix(t.ramp(sp, [(0.05, 0.75), (0.13, 0.0)]), col, C("#8a6a5c"))
+    band = t.noise(t.vec(scale=(1, 8, 1)), 30, detail=2)
+    col = t.mix(t.math("MULTIPLY", t.ramp(band, [(0.45, 0.0), (0.6, 1.0)]), 0.25), col, C("#fbf7f2"))
+    gloss = t.noise(t.vec(), 500, detail=2)
+    return t.finish(col, rough=0.22, normal=t.bump(gloss, 0.15, 0.001))
+
+
+def mat_shrimp_leg(name):
+    t = NT(name)
+    col = t.ramp(t.noise(t.vec(), 300), [(0.3, C("#e6dcd2")), (0.7, C("#fbf8f4"))])
+    return t.finish(col, rough=0.3)
+
+
+def build_shrimp():
+    """Cherry shrimp: cephalothorax with rostrum, eyes on stalks and antennules; two long antennae;
+    six abdominal segments bending as a chain, with swimmerets; the tail fan; four pairs of
+    walking legs and a pair of tiny claws. Front is -Y, the feet touch z = 0."""
+    m_shell, m_leg, m_eye = mat_shrimp_shell("shrimp_shell"), mat_shrimp_leg("shrimp_leg"), mat_eye("shrimp_eye")
+    H = 0.05
+    # cephalothorax: a smooth elongated shell, flatter below
+    head = uv_sphere("head", 1.0, (0, 0, 0), seg=28, rings=18)
+    for v in head.data.vertices:
+        x, y, z = v.co
+        hump = 1 + 0.12 * max(0.0, z) * (1 - abs(y))
+        v.co = Vector((x * 0.022, y * 0.056, (z * 0.026 if z > 0 else z * 0.018) * hump)) + Vector((0, -0.062, H))
+    rostrum = tube("rostrum", [(Vector((0, -0.112, H + 0.008)), 0.004), (Vector((0, -0.128, H + 0.012)), 0.0026), (Vector((0, -0.145, H + 0.016)), 0.0007)], seg=8, sub=2)
+    parts = [head, rostrum]
+    for sx in (-1, 1):
+        b = Vector((sx * 0.011, -0.104, H + 0.01))
+        tip = b + Vector((sx * 0.007, -0.008, 0.003))
+        parts.append(tube("estalk", [(b, 0.0032), (tip, 0.0028)], seg=8, sub=2))
+        eye = uv_sphere("eye", 0.0052, tip + Vector((sx * 0.001, -0.002, 0.001)), seg=12, rings=8)
+        eye.data.materials.append(m_eye)
+        parts.append(eye)
+        a0 = Vector((sx * 0.006, -0.108, H + 0.004))
+        for k in (0, 1):   # forked antennules
+            parts.append(tube("antennule", [(a0, 0.0014), (a0 + Vector((sx * (0.008 + k * 0.006), -0.02, 0.008 + k * 0.004)), 0.001),
+                                            (a0 + Vector((sx * (0.014 + k * 0.012), -0.038, 0.012 + k * 0.01)), 0.0004)], seg=6, sub=3))
+        # mouthparts: small paddles under the head
+        mp = uv_sphere("mp", 1.0, (0, 0, 0), seg=10, rings=6)
+        for v in mp.data.vertices:
+            v.co = Vector((v.co.x * 0.004, v.co.y * 0.008, v.co.z * 0.0025)) + Vector((sx * 0.005, -0.1, H - 0.016))
+        parts.append(mp)
+    for o in parts:
+        if not o.data.materials:
+            o.data.materials.append(m_shell)
+    body = join("Body", parts)
+    set_origin(body, (0, 0, 0))
+    D.shade_smooth(body, 70)
+    allp = [body]
+
+    # long antennae, sweeping forward and out (origins at their bases)
+    for side, sx in (("L", 1), ("R", -1)):
+        b = Vector((sx * 0.01, -0.104, H + 0.002))
+        ant = tube("Ant" + side, [(b, 0.0013), (b + Vector((sx * 0.03, -0.06, 0.03)), 0.001), (b + Vector((sx * 0.07, -0.11, 0.022)), 0.0008),
+                                  (b + Vector((sx * 0.1, -0.14, -0.002)), 0.0005), (b + Vector((sx * 0.12, -0.15, -0.025)), 0.0003)], seg=6, sub=4)
+        ant.data.materials.append(m_leg)
+        set_origin(ant, b)
+        parent(ant, body)
+        allp.append(ant)
+
+    # abdomen: six segments in a chain, curving down towards the tail
+    # the segments overlap like plates and the abdomen arches: up a little, then down to the tail
+    prev, p, ang = body, Vector((0, -0.012, H + 0.002)), 0.22
+    segs = []
+    for i in range(6):
+        L = 0.021 - i * 0.0016
+        r = 0.023 * (1 - i * 0.1)
+        ang -= 0.13
+        d = Vector((0, math.cos(ang), math.sin(ang)))
+        q = p + d * L
+        seg = uv_sphere("Seg%d" % i, 1.0, (0, 0, 0), seg=22, rings=14)
+        for v in seg.data.vertices:
+            x, y, z = v.co
+            # a plate: rounded on top, longer than the step so neighbours overlap, front end tucked in
+            taper = 1 - 0.12 * max(0.0, y)
+            v.co = Vector((x * r * 0.86 * taper, y * L * 0.85 + L * 0.12, z * r * (1.0 if z > 0 else 0.72) * taper))
+        rot = Vector((0, 1, 0)).rotation_difference(d).to_matrix().to_4x4()
+        seg.data.transform(Matrix.Translation((p + q) / 2) @ rot)
+        seg.data.materials.append(m_shell)
+        bits = [seg]
+        if 1 <= i <= 4:   # swimmerets
+            for sx in (-1, 1):
+                s0 = (p + q) / 2 + Vector((sx * r * 0.45, 0, -r * 0.55))
+                sw = tube("pleopod", [(s0, 0.0016), (s0 + Vector((sx * 0.002, 0.004, -0.012)), 0.0011), (s0 + Vector((sx * 0.003, 0.006, -0.018)), 0.0005)], seg=6, sub=2)
+                sw.data.materials.append(m_leg)
+                bits.append(sw)
+        seg = join("Seg%d" % i, bits)
+        set_origin(seg, p)
+        parent(seg, prev)
+        segs.append(seg)
+        allp.append(seg)
+        prev, p = seg, q
+    # tail fan: telson and four uropods, hinged at the last segment
+    fan = []
+    dt_ = Vector((0, math.cos(ang - 0.15), math.sin(ang - 0.15)))
+    tel = uv_sphere("telson", 1.0, (0, 0, 0), seg=16, rings=8)
+    for v in tel.data.vertices:
+        v.co = Vector((v.co.x * 0.007 * (1 - 0.5 * max(0, v.co.y)), v.co.y * 0.021, v.co.z * 0.003))
+    tel.data.transform(Matrix.Translation(p + dt_ * 0.018) @ Vector((0, 1, 0)).rotation_difference(dt_).to_matrix().to_4x4())
+    fan.append(tel)
+    for sx in (-1, 1):
+        for k, spread in ((0, 0.35), (1, 0.75)):
+            dd = (dt_ + Vector((sx * spread, 0, 0))).normalized()
+            u = uv_sphere("uropod", 1.0, (0, 0, 0), seg=14, rings=8)
+            for v in u.data.vertices:
+                v.co = Vector((v.co.x * 0.008, v.co.y * (0.021 - k * 0.003), v.co.z * 0.0025))
+            u.data.transform(Matrix.Translation(p + dd * 0.017) @ Vector((0, 1, 0)).rotation_difference(dd).to_matrix().to_4x4())
+            fan.append(u)
+    for o in fan:
+        o.data.materials.append(m_shell)
+    tail = join("Tail", fan)
+    set_origin(tail, p)
+    parent(tail, prev)
+    allp.append(tail)
+
+    # legs: four walking pairs and a pair of little claws, rigid, origins at the hips
+    for side, sx in (("L", 1), ("R", -1)):
+        for i, y in enumerate((-0.088, -0.07, -0.052, -0.034)):
+            hip = Vector((sx * 0.011, y, H - 0.014))
+            knee = hip + Vector((sx * 0.024, -0.004 + i * 0.003, 0.012))
+            foot = Vector((sx * (0.042 + i * 0.002), y + 0.004 + i * 0.006, 0.0))
+            leg = tube("Leg%s%d" % (side, i), [(hip, 0.0019), (knee, 0.0015), ((knee + foot) / 2 + Vector((sx * 0.003, 0, 0.004)), 0.0012), (foot, 0.0005)], seg=6, sub=3)
+            leg.data.materials.append(m_leg)
+            set_origin(leg, hip)
+            parent(leg, body)
+            allp.append(leg)
+        hip = Vector((sx * 0.008, -0.1, H - 0.016))
+        elbow = hip + Vector((sx * 0.012, -0.012, -0.012))
+        tip = elbow + Vector((sx * 0.004, -0.016, -0.012))
+        claw = tube("Cheli" + side, [(hip, 0.0017), (elbow, 0.0014), (tip, 0.0012)], seg=6, sub=3)
+        pin = uv_sphere("k", 0.0024, tip, scale=(0.8, 1.4, 0.8), seg=8, rings=6)
+        claw = join("Cheli" + side, [claw, pin])
+        claw.data.materials.clear()
+        claw.data.materials.append(m_leg)
+        set_origin(claw, hip)
+        parent(claw, body)
+        allp.append(claw)
+
+    for ob in allp:
+        if ob is not body:
+            D.shade_smooth(ob, 60)
+    bake_group(allp, "shrimp", size=1024, ao_dist=0.015)
+    export("shrimp", body)
+
+
 ASSETS = {
     "crab": build_crab,
     "snail-mystery": lambda: build_snail("mystery"),
     "snail-nerite": lambda: build_snail("nerite"),
     "snail-ramshorn": lambda: build_snail("ramshorn"),
+    "shrimp": build_shrimp,
 }
 
 
