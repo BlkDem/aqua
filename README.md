@@ -34,8 +34,9 @@ src/
   fx/director.js       камера: пресеты, слежение, cinematic и режим наблюдения
   fx/audio.js          синтезированный звук: вода, фильтр, пузырьки, эмбиент
   world/tank.js        аквариум, стекло, вода, песок, фильтр, LED
-  world/decor.js       замок, коряга, корабль, сундук, пещера, руины, водолаз…
-  world/plants.js      валлиснерия, эхинодорусы, стебельки, мох, кораллы, актиния
+  world/decor.js       расстановка декора: замок, коряга, корабль, сундук, пещера, руины, водолаз…
+  world/decorAssets.js загрузка моделей декора и растений, роли частей (Glow/Sway/Glass)
+  world/plants.js      расстановка растений, мох, травяной ковёр, кораллы, актиния
   world/daycycle.js    утро / день / вечер / ночь
   life/species.js      12 видов: форма, окраска, плавники, манера плавания, характер
   life/fishModel.js    процедурная модель рыбы
@@ -43,6 +44,19 @@ src/
   life/critters.js     креветки, улитки, крабик
   life/ecosystem.js    мир: истории, случайные и редкие события, кормление, секреты
   ui/ui.js             минимальный интерфейс
+tools/blender/
+  make_fish.py         модели рыб           → public/models/fish
+  make_decor.py        декор и кораллы      → public/models/decor (процедурные материалы запекаются в текстуры)
+  make_plants.py       растения и мох       → public/models/plants
 ```
+
+Модели пересобираются в Blender без интерфейса, например:
+
+```bash
+blender -b -P tools/blender/make_decor.py -- public/models/decor castle ship
+blender -b -P tools/blender/make_plants.py -- public/models/plants
+```
+
+Запекание декора идёт в Cycles; если в системе есть GPU (OptiX/CUDA/HIP), он используется автоматически.
 
 Имена рыб и найденные секреты сохраняются в `localStorage`, поэтому характер и имя конкретной рыбки сохраняются между запусками.

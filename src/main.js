@@ -3,6 +3,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { G, rand } from './fx/shaderPatch.js';
 import { buildTank, updateTank, TANK } from './world/tank.js';
 import { buildDecor, updateDecor } from './world/decor.js';
+import { loadDecorAssets } from './world/decorAssets.js';
 import { buildPlants, finishMoss, updatePlants } from './world/plants.js';
 import { DayCycle } from './world/daycycle.js';
 import { mergeStatic } from './world/mergeStatic.js';
@@ -80,6 +81,11 @@ scene.add(fill);
 
 // ------------------------------------------------------------------ world
 const tank = buildTank(scene);
+await loadDecorAssets([
+  ...['castle', 'rocks', 'arch', 'cave', 'ruins', 'driftwood', 'ship', 'chest', 'bottle', 'mushroom', 'lantern', 'diver', 'duck', 'shells', 'corals', 'pebbles', 'rockpile', 'wreckage']
+    .map((n) => `decor/${n}`),
+  ...['vallisneria', 'sword', 'crypt', 'anubias', 'limnophila', 'cabomba', 'ludwigia', 'pistia', 'moss'].map((n) => `plants/${n}`),
+]);
 const decor = buildDecor(scene);
 const plants = buildPlants(scene);
 scene.updateMatrixWorld(true);
