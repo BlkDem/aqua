@@ -27,9 +27,9 @@ jobs:
       name: production
       url: https://aqua.umolab.ru
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -39,19 +39,53 @@ jobs:
           npm ci
           npm run build
 
-      - name: Upload to the server
+      # every failure below is reported as an annotation with its reason, so it can be read
+      # on the run's summary page without digging through the log
+      - name: Prepare the deploy key
         env:
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
         run: |
+          if [ -z "$DEPLOY_SSH_KEY" ]; then
+            echo "::error title=No deploy key::The repository secret DEPLOY_SSH_KEY is not set (Settings → Secrets and variables → Actions)"
+            exit 1
+          fi
           install -m 700 -d ~/.ssh
-          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          # tolerate a key pasted with Windows line endings or without the final newline
+          printf '%s\n' "$DEPLOY_SSH_KEY" | tr -d '\r' > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
+          if ! ssh-keygen -y -f ~/.ssh/deploy_key > ~/.ssh/deploy_key.pub 2> keyerr.txt; then
+            echo "::error title=Bad deploy key::DEPLOY_SSH_KEY is not a valid private key: $(head -c 200 keyerr.txt). Paste the whole file including the BEGIN/END lines."
+            exit 1
+          fi
+          echo "::notice title=Deploy key::$(ssh-keygen -lf ~/.ssh/deploy_key.pub)"
           printf '%s\n' "$DEPLOY_KNOWN_HOST" > ~/.ssh/known_hosts
+
+      - name: Check the server is reachable
+        run: |
+          if ! timeout 15 bash -c "exec 3<>/dev/tcp/$DEPLOY_HOST/22"; then
+            echo "::error title=SSH port closed::$DEPLOY_HOST:22 does not answer from GitHub's runners (a firewall or fail2ban on the server?)"
+            exit 1
+          fi
+          scanned=$(ssh-keyscan -t ed25519 -T 10 "$DEPLOY_HOST" 2>/dev/null | awk '{print $3}')
+          if [ "$scanned" != "$(echo "$DEPLOY_KNOWN_HOST" | awk '{print $3}')" ]; then
+            echo "::error title=Host key changed::$DEPLOY_HOST now presents ed25519 key '$scanned'; update DEPLOY_KNOWN_HOST in this workflow if the server was reinstalled"
+            exit 1
+          fi
+
+      - name: Upload to the server
+        run: |
           # the key is locked to the site directory on the server, so the target is "./";
           # files stay group-writable for the fastuser group that owns the site
+          set +e
           rsync -az --delete --omit-dir-times --chmod=D2775,F664 \
-            -e "ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o BatchMode=yes" \
-            dist/ "$DEPLOY_USER@$DEPLOY_HOST:./"
+            -e "ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=20" \
+            dist/ "$DEPLOY_USER@$DEPLOY_HOST:./" 2> rsync-err.txt
+          code=$?
+          cat rsync-err.txt >&2
+          if [ $code -ne 0 ]; then
+            echo "::error title=rsync failed ($code)::$(tail -n 3 rsync-err.txt | tr '\n' ' ' | head -c 400)"
+            exit $code
+          fi
 
       - name: Check the site answers
         run: |
