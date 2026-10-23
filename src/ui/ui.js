@@ -1,7 +1,7 @@
 // Minimal glass UI. All DOM, no framework.
 import { SPECIES } from '../life/species.js';
 import { STAGE, RARE } from '../life/lifecycle.js';
-import { duration } from '../life/words.js';
+import { duration, fishWord } from '../life/words.js';
 import { pwa } from '../pwa.js';
 import { KIND_TITLE, gpuPref, setGpuPref, switchHelp } from '../fx/gpu.js';
 
@@ -328,6 +328,9 @@ export class UI {
         ${check('stories', 'Показывать истории', this.showStories)}
         <div class="sect">Приложение</div>
         <div class="app-box"></div>
+        <div class="sect">Резервная копия</div>
+        <div class="tip">Весь аквариум — рыбки, их семьи, растения и история — в одном файле. Его можно сохранить на память или перенести на другое устройство.</div>
+        <div class="backup"><button class="wide save-file">Сохранить в файл</button><button class="wide load-file">Загрузить из файла</button></div>
         <div class="tip">Кликните по стеклу, чтобы постучать. Наведите на рыбку, чтобы узнать имя. В аквариуме спрятано несколько секретов…</div>
       </div>
       <div class="set-body" data-p="view">
@@ -397,12 +400,45 @@ export class UI {
       else if (k === 'feeder') { F.on = v; app.eco.save(); this.hint(v ? 'Автокормушка включена' : 'Автокормушка выключена — рыбки не пропадут, просто кормите сами, когда захочется'); }
       else { P[k] = v; this.applyPref(k, v); this.savePrefs(); }
     }));
+    p.querySelector('.save-file').addEventListener('click', () => this.saveBackup());
+    p.querySelector('.load-file').addEventListener('click', () => this.loadBackup());
     this.appBox = p.querySelector('.app-box');
     pwa.onChange = () => this.renderApp();
     pwa.onUpdate = (apply) => this.offerUpdate(apply);
     this.renderApp();
     this.root.appendChild(p);
     return p;
+  }
+
+  saveBackup() {
+    const w = this.app.eco.world;
+    const d = new Date(), pad = (n) => String(n).padStart(2, '0');
+    const name = `аквариум-${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}.json`;
+    const url = URL.createObjectURL(new Blob([w.exportJson()], { type: 'application/json' }));
+    const a = h('a');
+    a.href = url;
+    a.download = name;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    this.hint(`Копия сохранена: ${name}`);
+  }
+
+  loadBackup() {
+    const input = h('input');
+    input.type = 'file';
+    input.accept = 'application/json,.json';
+    input.addEventListener('change', async () => {
+      const file = input.files[0];
+      if (!file) return;
+      const json = await file.text();
+      let n = 0;
+      try { n = JSON.parse(json).fish.length; } catch (e) { /* checked below */ }
+      if (!n) { this.hint('Это не копия аквариума'); return; }
+      if (!confirm(`Заменить нынешний аквариум копией из файла (${fishWord(n)})? Нынешний пропадёт, если его не сохранить.`)) return;
+      if (this.app.eco.world.importJson(json)) location.reload();
+      else this.hint('Не получилось загрузить копию');
+    });
+    input.click();
   }
 
   /** Install button and offline status in the settings. */

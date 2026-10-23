@@ -88,9 +88,26 @@ export class World {
   }
 
   save() {
+    if (this.replaced) return;
     this.state.clock = this.now();
     this.state.lastSeen = this.now();
     try { localStorage.setItem(KEY, JSON.stringify(this.state)); } catch (e) { /* storage full or blocked */ }
+  }
+
+  /** The whole aquarium as JSON: a backup, or to move it to another device or to the Unity version. */
+  exportJson() {
+    this.save();
+    return JSON.stringify(this.state);
+  }
+
+  /** Put an exported aquarium in place of this one (takes effect after a reload). */
+  importJson(json) {
+    let st;
+    try { st = JSON.parse(json); } catch (e) { return false; }
+    if (!st || st.v !== 2 || !Array.isArray(st.fish)) return false;
+    try { localStorage.setItem(KEY, json); } catch (e) { return false; }
+    this.replaced = true;   // keep the old world from saving over it on the way out
+    return true;
   }
 
   get fish() { return this.state.fish; }

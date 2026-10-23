@@ -194,3 +194,5 @@ body.immersive .exit-btn.show { opacity: 1; pointer-events: auto; }
 body.idle, body.idle * { cursor: none !important; }
 body.idle .dock { opacity: 0; transform: translate(-50%, 140%); pointer-events: none; }
 body.idle .hint, body.idle .notices, body.idle .card, body.idle .hover-label, body.idle .fps, body.idle .exit-btn { opacity: 0 !important; pointer-events: none !important; }
+.settings .backup { display: flex; gap: 6px; }
+.settings .backup .wide { flex: 1; font-size: 12px; padding: 8px 4px; }
