@@ -221,66 +221,118 @@ export function buildFishModel(sp, variant, R) {
 const EYE_UV = [0.997, 0.997];
 const IRIS = { neon: '#8fd6ff', guppy: '#d8c070', goldfish: '#e0a030', angelfish: '#d04a2a', clown: '#e07a20', cory: '#b89a60', cichlid: '#ffd040', discus: '#ff3b1f', barb: '#ff5533', betta: '#5a3a80', rainbow: '#e6c060', moonfish: '#b0e8ff' }; // white, flat texel block reserved in every body texture
 
-export function buildAssetFishModel(sp, A) {
-  const L = sp.len;
-  const root = new THREE.Group();
-  const wag = { value: new THREE.Vector4(0, sp.swim.amp * L, 0, L) };
-  const glow = sp.glow ? { value: 0 } : null;
-  const pect = { value: 0.55 };
-  const withColor = (g, color) => {
-    const n = g.attributes.position.count, arr = new Float32Array(n * 3), c = new THREE.Color(color);
-    for (let i = 0; i < n; i++) c.toArray(arr, i * 3);
-    g.setAttribute('color', new THREE.BufferAttribute(arr, 3));
-    return g;
-  };
+const _m = new THREE.Matrix4(), _hidden = new THREE.Matrix4().makeScale(0, 0, 0), _c = new THREE.Color();
 
-  // body + cartoon eyes in one mesh
-  const parts = [withColor(A.body.clone(), '#ffffff')];
-  const eyePart = (r, ws, hs, color, pos) => {
-    const g = new THREE.SphereGeometry(r, ws, hs);
-    const uv = g.attributes.uv;
-    for (let i = 0; i < uv.count; i++) uv.setXY(i, EYE_UV[0], EYE_UV[1]);
-    g.translate(pos.x, pos.y, pos.z);
-    parts.push(withColor(g, color));
-  };
-  // natural eyes: coloured iris ball, big dark pupil, small specular glint
-  const iris = IRIS[sp.id] || '#c9a24a';
-  A.eyes.forEach((e, k) => {
-    const s = k === 0 ? -1 : 1, er = e.r * 0.85, p = e.pos;
-    eyePart(er, 16, 12, iris, p);
-    eyePart(er * 0.62, 14, 10, '#030303', p.clone().add(new THREE.Vector3(s * er * 0.48, 0, er * 0.05)));
-    eyePart(er * 0.13, 6, 4, '#ffffff', p.clone().add(new THREE.Vector3(s * er * 0.98, er * 0.32, er * 0.28)));
-  });
-  const bodyMat = patchMaterial(new THREE.MeshPhysicalMaterial({
-    map: A.bodyMap, normalMap: A.bodyNormal, normalScale: new THREE.Vector2(0.7, 0.7), vertexColors: true,
-    roughness: 0.3, metalness: 0.05, clearcoat: 0.7, clearcoatRoughness: 0.18,
-    iridescence: sp.irid || 0, iridescenceIOR: 1.35, iridescenceThicknessRange: [200, 600],
-    sheen: 0.4, sheenColor: new THREE.Color('#ffffff'), sheenRoughness: 0.5,
-    emissive: sp.glow ? new THREE.Color('#8fe9ff') : new THREE.Color('#000'), emissiveIntensity: sp.glow ? 0.4 : 0,
-  }), { caustics: 0.55, wag, glow });
-  const body = new THREE.Mesh(mergeGeometries(parts), bodyMat);
-  body.castShadow = true;
-  root.add(body);
+/**
+ * Every fish drawn from one Blender model (a species, or one colour variant of it) shares two
+ * instanced meshes, body and fins: two draw calls for the whole group instead of two per fish.
+ * Each fish keeps a transform-only root object; its tail wave and fin paddling go into
+ * per-instance attributes that the swim shader reads instead of uniforms, its inherited tint
+ * into the instance colour.
+ */
+export class FishBatch {
+  constructor(sp, A, scene, cap = 48) {
+    const L = sp.len;
+    this.cap = cap;
+    this.fish = [];
+    this.glow = sp.glow ? { value: 0 } : null;
+    this.iWag = new THREE.InstancedBufferAttribute(new Float32Array(cap * 4), 4).setUsage(THREE.DynamicDrawUsage);
+    this.iPect = new THREE.InstancedBufferAttribute(new Float32Array(cap), 1).setUsage(THREE.DynamicDrawUsage);
+    const withColor = (g, color) => {
+      const n = g.attributes.position.count, arr = new Float32Array(n * 3), c = new THREE.Color(color);
+      for (let i = 0; i < n; i++) c.toArray(arr, i * 3);
+      g.setAttribute('color', new THREE.BufferAttribute(arr, 3));
+      return g;
+    };
 
-  // fins: fixed fins + pectorals (paddled in the shader around their pivots)
-  const fixed = A.fins.clone();
-  fixed.setAttribute('aPect', new THREE.BufferAttribute(new Float32Array(fixed.attributes.position.count * 4), 4));
-  const finGeos = [fixed];
-  A.pects.forEach((pc, k) => {
-    const g = pc.geo.clone(), n = g.attributes.position.count, ap = new Float32Array(n * 4);
-    for (let i = 0; i < n; i++) ap.set([k === 0 ? -1 : 1, pc.pivot.x, pc.pivot.y, pc.pivot.z], i * 4);
-    g.setAttribute('aPect', new THREE.BufferAttribute(ap, 4));
-    finGeos.push(g);
-  });
-  const finMat = patchMaterial(new THREE.MeshPhysicalMaterial({
-    map: A.finMap, transparent: true, side: THREE.DoubleSide, depthWrite: false, roughness: 0.35,
-    iridescence: (sp.irid || 0) * 0.8, iridescenceIOR: 1.3, sheen: 0.5, sheenColor: new THREE.Color('#ffffff'),
-    emissive: sp.glow ? new THREE.Color('#8fb6ff') : new THREE.Color('#000'), emissiveIntensity: sp.glow ? 0.6 : 0,
-  }), { caustics: 0.4, wag, glow, pect });
-  finMat.forceSinglePass = true;
-  const fins = new THREE.Mesh(mergeGeometries(finGeos), finMat);
-  fins.renderOrder = 5;
-  root.add(fins);
+    // body + cartoon eyes in one mesh
+    const parts = [withColor(A.body.clone(), '#ffffff')];
+    const eyePart = (r, ws, hs, color, pos) => {
+      const g = new THREE.SphereGeometry(r, ws, hs);
+      const uv = g.attributes.uv;
+      for (let i = 0; i < uv.count; i++) uv.setXY(i, EYE_UV[0], EYE_UV[1]);
+      g.translate(pos.x, pos.y, pos.z);
+      parts.push(withColor(g, color));
+    };
+    // natural eyes: coloured iris ball, big dark pupil, small specular glint
+    const iris = IRIS[sp.id] || '#c9a24a';
+    A.eyes.forEach((e, k) => {
+      const s = k === 0 ? -1 : 1, er = e.r * 0.85, p = e.pos;
+      eyePart(er, 16, 12, iris, p);
+      eyePart(er * 0.62, 14, 10, '#030303', p.clone().add(new THREE.Vector3(s * er * 0.48, 0, er * 0.05)));
+      eyePart(er * 0.13, 6, 4, '#ffffff', p.clone().add(new THREE.Vector3(s * er * 0.98, er * 0.32, er * 0.28)));
+    });
+    const bodyGeo = mergeGeometries(parts);
+    bodyGeo.setAttribute('iWag', this.iWag);
+    const bodyMat = patchMaterial(new THREE.MeshPhysicalMaterial({
+      map: A.bodyMap, normalMap: A.bodyNormal, normalScale: new THREE.Vector2(0.7, 0.7), vertexColors: true,
+      roughness: 0.3, metalness: 0.05, clearcoat: 0.7, clearcoatRoughness: 0.18,
+      iridescence: sp.irid || 0, iridescenceIOR: 1.35, iridescenceThicknessRange: [200, 600],
+      sheen: 0.4, sheenColor: new THREE.Color('#ffffff'), sheenRoughness: 0.5,
+      emissive: sp.glow ? new THREE.Color('#8fe9ff') : new THREE.Color('#000'), emissiveIntensity: sp.glow ? 0.4 : 0,
+    }), { caustics: 0.55, wag: true, instanced: true, glow: this.glow });
 
-  return { root, body, bodyMat, finMat, wag, pect, glow };
+    // fins: fixed fins + pectorals (paddled in the shader around their pivots)
+    const fixed = A.fins.clone();
+    fixed.setAttribute('aPect', new THREE.BufferAttribute(new Float32Array(fixed.attributes.position.count * 4), 4));
+    const finGeos = [fixed];
+    A.pects.forEach((pc, k) => {
+      const g = pc.geo.clone(), n = g.attributes.position.count, ap = new Float32Array(n * 4);
+      for (let i = 0; i < n; i++) ap.set([k === 0 ? -1 : 1, pc.pivot.x, pc.pivot.y, pc.pivot.z], i * 4);
+      g.setAttribute('aPect', new THREE.BufferAttribute(ap, 4));
+      finGeos.push(g);
+    });
+    const finGeo = mergeGeometries(finGeos);
+    finGeo.setAttribute('iWag', this.iWag);
+    finGeo.setAttribute('iPect', this.iPect);
+    const finMat = patchMaterial(new THREE.MeshPhysicalMaterial({
+      map: A.finMap, transparent: true, side: THREE.DoubleSide, depthWrite: false, roughness: 0.35,
+      iridescence: (sp.irid || 0) * 0.8, iridescenceIOR: 1.3, sheen: 0.5, sheenColor: new THREE.Color('#ffffff'),
+      emissive: sp.glow ? new THREE.Color('#8fb6ff') : new THREE.Color('#000'), emissiveIntensity: sp.glow ? 0.6 : 0,
+    }), { caustics: 0.4, wag: true, instanced: true, glow: this.glow, pect: true });
+    finMat.forceSinglePass = true;
+
+    this.body = new THREE.InstancedMesh(bodyGeo, bodyMat, cap);
+    this.fins = new THREE.InstancedMesh(finGeo, finMat, cap);
+    for (const m of [this.body, this.fins]) {
+      m.count = 0;
+      m.frustumCulled = false;
+      m.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      m.setColorAt(0, _c.set(1, 1, 1));
+      scene.add(m);
+    }
+    this.body.castShadow = true;
+    this.fins.renderOrder = 5;
+    // an invisible stand-in each fish carries for clicking and hovering
+    const r = Math.max(sp.height, sp.width) * 0.45;
+    this.pickGeo = new THREE.CapsuleGeometry(r, Math.max(0.01, L - 2 * r), 4, 8).rotateX(Math.PI / 2);
+  }
+
+  add(f, tint) {
+    const i = this.fish.length;
+    if (i >= this.cap) { console.warn('fish batch full', f.sp.id); return; }
+    this.fish.push(f);
+    _c.setRGB(...tint);
+    this.body.setColorAt(i, _c);
+    this.fins.setColorAt(i, _c);
+    this.body.instanceColor.needsUpdate = this.fins.instanceColor.needsUpdate = true;
+  }
+
+  /** Upload where every fish is and how its body and fins move this frame. */
+  update() {
+    const n = this.fish.length;
+    for (let i = 0; i < n; i++) {
+      const f = this.fish[i];
+      if (f.hidden) _m.copy(_hidden);
+      else { f.root.updateMatrix(); _m.copy(f.root.matrix); }
+      this.body.setMatrixAt(i, _m);
+      this.fins.setMatrixAt(i, _m);
+      const W = f.wag.value;
+      this.iWag.setXYZW(i, W.x, W.y, W.z, W.w);
+      this.iPect.setX(i, f.pect.value);
+    }
+    this.body.count = this.fins.count = n;
+    this.body.instanceMatrix.needsUpdate = this.fins.instanceMatrix.needsUpdate = true;
+    this.iWag.needsUpdate = this.iPect.needsUpdate = true;
+  }
 }

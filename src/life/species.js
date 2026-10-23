@@ -9,6 +9,9 @@ const band = (v, a, b, soft = 0.05) => {
   return Math.max(0, Math.min(1, s1)) * Math.max(0, Math.min(1, s2));
 };
 
+// life: ages in real days. juvenile/adult: when a fry becomes a juvenile and an adult;
+// span: a comfortable life span; breed: days between broods of a pair, fry per brood,
+// population cap for the species, livebearer / parental care flags.
 export const SPECIES = {
   neon: {
     id: 'neon', title: 'Неон', count: 16, len: 0.34, height: 0.1, width: 0.065,
@@ -26,6 +29,7 @@ export const SPECIES = {
     swim: { cruise: 0.95, max: 2.6, freq: 15, amp: 0.05, accel: 5, turn: 5.5, burst: 0.7 },
     school: 1.0, zone: [1.0, 3.6], social: 0.5,
     traits: { activity: 0.8, bravery: 0.3, curiosity: 0.4, playfulness: 0.6, shyness: 0.6, aggression: 0.05, gluttony: 0.6, territoriality: 0.0 },
+    life: { juvenile: 1, adult: 3, span: 90, breed: { every: 6, brood: [3, 7], cap: 22 } },
     diet: 'flakes', nocturnal: false,
   },
   guppy: {
@@ -47,6 +51,7 @@ export const SPECIES = {
     swim: { cruise: 0.6, max: 1.9, freq: 12, amp: 0.05, accel: 3.5, turn: 4.5, burst: 0.4 },
     school: 0.45, zone: [2.6, 5.3], social: 0.7,
     traits: { activity: 0.75, bravery: 0.5, curiosity: 0.6, playfulness: 0.8, shyness: 0.3, aggression: 0.1, gluttony: 0.7, territoriality: 0.0 },
+    life: { juvenile: 0.6, adult: 2, span: 60, breed: { every: 4, brood: [2, 5], cap: 12, live: true } },
   },
   goldfish: {
     id: 'goldfish', title: 'Золотая рыбка', count: 2, len: 0.85, height: 0.5, width: 0.36,
@@ -65,6 +70,7 @@ export const SPECIES = {
     swim: { cruise: 0.42, max: 1.3, freq: 4.2, amp: 0.1, accel: 1.4, turn: 1.8, burst: 0 },
     school: 0, zone: [1.2, 4.8], social: 0.6, big: true,
     traits: { activity: 0.5, bravery: 0.8, curiosity: 0.6, playfulness: 0.5, shyness: 0.1, aggression: 0.15, gluttony: 1.0, territoriality: 0.0 },
+    life: { juvenile: 2, adult: 8, span: 180, breed: { every: 12, brood: [2, 4], cap: 4 } },
   },
   angelfish: {
     id: 'angelfish', title: 'Скалярия', count: 3, len: 0.62, height: 0.75, width: 0.12,
@@ -83,6 +89,7 @@ export const SPECIES = {
     swim: { cruise: 0.33, max: 1.2, freq: 3.2, amp: 0.05, accel: 1.2, turn: 2.0, burst: 0, glide: true },
     school: 0.15, zone: [1.8, 4.6], social: 0.5, big: true,
     traits: { activity: 0.35, bravery: 0.6, curiosity: 0.5, playfulness: 0.2, shyness: 0.3, aggression: 0.3, gluttony: 0.6, territoriality: 0.3 },
+    life: { juvenile: 2, adult: 7, span: 150, breed: { every: 10, brood: [2, 4], cap: 4, care: true } },
   },
   clown: {
     id: 'clown', title: 'Рыба-клоун', count: 2, len: 0.46, height: 0.21, width: 0.13,
@@ -104,6 +111,7 @@ export const SPECIES = {
     swim: { cruise: 0.45, max: 1.6, freq: 9, amp: 0.05, accel: 3, turn: 4, burst: 0.2, wiggle: true },
     school: 0, zone: [0.9, 3.0], social: 0.5, homeKind: 'anemone',
     traits: { activity: 0.6, bravery: 0.7, curiosity: 0.5, playfulness: 0.5, shyness: 0.2, aggression: 0.45, gluttony: 0.6, territoriality: 0.7 },
+    life: { juvenile: 2, adult: 7, span: 150, breed: { every: 10, brood: [2, 3], cap: 4, care: true } },
   },
   cory: {
     id: 'cory', title: 'Сомик-коридорас', count: 5, len: 0.42, height: 0.17, width: 0.15,
@@ -122,6 +130,7 @@ export const SPECIES = {
     swim: { cruise: 0.35, max: 1.4, freq: 10, amp: 0.05, accel: 3, turn: 3.8, burst: 0.6 },
     school: 0.35, zone: [0, 0.6], social: 0.8,
     traits: { activity: 0.6, bravery: 0.4, curiosity: 0.8, playfulness: 0.4, shyness: 0.4, aggression: 0, gluttony: 0.8, territoriality: 0 },
+    life: { juvenile: 1.5, adult: 5, span: 120, breed: { every: 7, brood: [2, 5], cap: 8 } },
     nocturnal: true,
   },
   cichlid: {
@@ -142,6 +151,7 @@ export const SPECIES = {
     swim: { cruise: 0.55, max: 2.0, freq: 7, amp: 0.05, accel: 3, turn: 3.6, burst: 0.3 },
     school: 0, zone: [0.6, 3.2], social: 0.2,
     traits: { activity: 0.6, bravery: 0.9, curiosity: 0.5, playfulness: 0.2, shyness: 0.05, aggression: 0.85, gluttony: 0.8, territoriality: 1.0 },
+    life: { juvenile: 1.5, adult: 6, span: 120, breed: { every: 9, brood: [2, 4], cap: 3, care: true } },
   },
   discus: {
     id: 'discus', title: 'Дискус', count: 2, len: 0.6, height: 0.58, width: 0.11,
@@ -161,6 +171,7 @@ export const SPECIES = {
     swim: { cruise: 0.28, max: 1.1, freq: 3.5, amp: 0.035, accel: 1.1, turn: 1.8, burst: 0, glide: true },
     school: 0.2, zone: [1.5, 4.2], social: 0.6, big: true,
     traits: { activity: 0.3, bravery: 0.4, curiosity: 0.4, playfulness: 0.2, shyness: 0.6, aggression: 0.1, gluttony: 0.5, territoriality: 0.2 },
+    life: { juvenile: 3, adult: 10, span: 200, breed: { every: 14, brood: [2, 3], cap: 4, care: true } },
   },
   barb: {
     id: 'barb', title: 'Суматранский барбус', count: 7, len: 0.38, height: 0.19, width: 0.08,
@@ -178,6 +189,7 @@ export const SPECIES = {
     swim: { cruise: 1.0, max: 2.6, freq: 13, amp: 0.05, accel: 5, turn: 5.5, burst: 0.6 },
     school: 0.85, zone: [1.0, 4.0], social: 0.6, mischief: true,
     traits: { activity: 0.95, bravery: 0.7, curiosity: 0.6, playfulness: 0.9, shyness: 0.1, aggression: 0.5, gluttony: 0.8, territoriality: 0 },
+    life: { juvenile: 1, adult: 3, span: 90, breed: { every: 6, brood: [3, 6], cap: 10 } },
   },
   betta: {
     id: 'betta', title: 'Петушок', count: 1, len: 0.42, height: 0.14, width: 0.09,
@@ -193,6 +205,7 @@ export const SPECIES = {
     swim: { cruise: 0.25, max: 1.2, freq: 3.0, amp: 0.05, accel: 1.6, turn: 2.8, burst: 0 },
     school: 0, zone: [3.2, 5.3], social: 0.1,
     traits: { activity: 0.35, bravery: 0.9, curiosity: 0.6, playfulness: 0.2, shyness: 0.1, aggression: 0.7, gluttony: 0.7, territoriality: 0.9 },
+    life: { juvenile: 1, adult: 4, span: 80, breed: null },
   },
   rainbow: {
     id: 'rainbow', title: 'Радужница', count: 4, len: 0.48, height: 0.2, width: 0.07,
@@ -210,6 +223,7 @@ export const SPECIES = {
     swim: { cruise: 1.1, max: 2.6, freq: 11, amp: 0.045, accel: 4.5, turn: 4.0, burst: 0.4 },
     school: 0.8, zone: [3.0, 5.2], social: 0.6,
     traits: { activity: 0.9, bravery: 0.6, curiosity: 0.5, playfulness: 0.7, shyness: 0.2, aggression: 0.1, gluttony: 0.6, territoriality: 0 },
+    life: { juvenile: 1.5, adult: 5, span: 120, breed: { every: 8, brood: [2, 5], cap: 8 } },
   },
   moonfish: {
     id: 'moonfish', title: 'Лунная рыбка', count: 1, len: 0.5, height: 0.3, width: 0.1, rare: true,
@@ -225,6 +239,7 @@ export const SPECIES = {
     swim: { cruise: 0.35, max: 1.3, freq: 3.5, amp: 0.06, accel: 1.6, turn: 2.5, burst: 0, glide: true },
     school: 0, zone: [1.5, 5.0], social: 0.3,
     traits: { activity: 0.4, bravery: 0.4, curiosity: 0.9, playfulness: 0.6, shyness: 0.7, aggression: 0, gluttony: 0.3, territoriality: 0 },
+    life: { juvenile: 1, adult: 3, span: 365, breed: null },
     nocturnal: true,
   },
 };

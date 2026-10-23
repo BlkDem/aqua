@@ -51,7 +51,7 @@ export async function loadDecorAssets(paths, onProgress) {
     } catch (e) {
       console.warn(`decor model "${name}" not loaded, using procedural fallback`, e);
     }
-    onProgress && onProgress(++done / names.length);
+    onProgress && onProgress(++done / paths.length);
   }));
   return MODELS;
 }

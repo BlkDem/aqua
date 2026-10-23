@@ -216,6 +216,14 @@ export function buildGodRays(scene) {
 }
 
 // ======================================================= FOOD
+// flakes float for a while and drift down slowly, pellets sink straight to the bottom
+// (catfish love them), bloodworms are a red treat that excites everyone
+const FOODS = {
+  flakes: { float: [1.5, 4.5], sink: [0.08, 0.2], r: [0.018, 0.035], stretch: 1, colors: ['#ff8a3d', '#ffb347', '#e94b3c', '#8bc34a', '#ffd166', '#c0712f'] },
+  pellets: { float: [0, 0.4], sink: [0.35, 0.55], r: [0.02, 0.03], stretch: 1, colors: ['#8a5a2b', '#a0662e', '#6e4420', '#b07a3c'] },
+  worms: { float: [0.2, 0.9], sink: [0.14, 0.26], r: [0.012, 0.018], stretch: 3.5, colors: ['#c0182a', '#a5121f', '#d62a3a'] },
+};
+
 export class Food {
   constructor(scene, eco, max = 260) {
     this.eco = eco;
@@ -228,16 +236,18 @@ export class Food {
     scene.add(this.mesh);
     this.max = max;
     this.items = eco.food;
-    this.colors = ['#ff8a3d', '#ffb347', '#e94b3c', '#8bc34a', '#ffd166', '#c0712f'].map((c) => new THREE.Color(c));
-    for (let i = 0; i < max; i++) this.mesh.setColorAt(i, pick(this.colors));
+    this.colors = {};
+    for (const [k, f] of Object.entries(FOODS)) this.colors[k] = f.colors.map((c) => new THREE.Color(c));
+    for (let i = 0; i < max; i++) this.mesh.setColorAt(i, this.colors.flakes[0]);
   }
-  drop(x, z, n = 26) {
+  drop(x, z, n = 26, type = 'flakes') {
+    const F = FOODS[type] || FOODS.flakes;
     for (let i = 0; i < n; i++) {
       if (this.items.length >= this.max) break;
       const it = {
         pos: new THREE.Vector3(x + rand(-0.6, 0.6), TANK.waterY - 0.01, z + rand(-0.4, 0.4)),
         vel: new THREE.Vector3(rand(-0.05, 0.05), 0, rand(-0.05, 0.05)),
-        float: rand(0.5, 3.5), sink: rand(0.12, 0.3), r: rand(0.018, 0.035),
+        float: rand(...F.float), sink: rand(...F.sink), r: rand(...F.r), stretch: F.stretch, color: pick(this.colors[type] || this.colors.flakes),
         rot: new THREE.Euler(rand(0, 3), rand(0, 3), rand(0, 3)), spin: rand(-2, 2),
         claim: new Set(), eaten: false, grounded: false, age: 0, ph: rand(0, 10),
       };
@@ -274,11 +284,13 @@ export class Food {
       const f = L[i];
       _q.setFromEuler(f.rot);
       const s = f.grounded ? f.r * Math.max(0, 1 - Math.max(0, f.groundT - 60) / 10) : f.r;
-      _s.set(s, s, s);
+      _s.set(s, s * f.stretch, s);
       _m.compose(f.pos, _q, _s);
       this.mesh.setMatrixAt(i, _m);
+      this.mesh.setColorAt(i, f.color);
     }
     this.mesh.count = L.length;
     this.mesh.instanceMatrix.needsUpdate = true;
+    if (L.length) this.mesh.instanceColor.needsUpdate = true;
   }
 }

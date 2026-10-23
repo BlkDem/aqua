@@ -2,6 +2,18 @@ import * as THREE from 'three';
 import { patchMaterial, rand } from '../fx/shaderPatch.js';
 import { sandHeight, TANK } from './tank.js';
 import { decorNode } from './decorAssets.js';
+import { DAY } from '../life/world.js';
+
+// Plants grow over days (from half size towards full size), and some spread: now and then a
+// clump sends out a runner and a young plant appears nearby. every: days between runners.
+const SPREAD = {
+  vallisneria: { title: 'Валлиснерия', every: [5, 9], cap: 14, dist: [0.45, 0.8] },
+  crypt: { title: 'Криптокорина', every: [7, 12], cap: 9, dist: [0.35, 0.6] },
+  sword: { title: 'Эхинодорус', every: [12, 20], cap: 6, dist: [0.7, 1.0] },
+};
+const VARIANTS = { vallisneria: 3, sword: 2, crypt: 2, limnophila: 2, cabomba: 2, ludwigia: 2, anubias: 2 };
+const NODE = { vallisneria: 'SwayVallis', sword: 'SwaySword', crypt: 'SwayCrypt', limnophila: 'SwayLimno', cabomba: 'SwayCabomba', ludwigia: 'SwayLudwigia', anubias: 'SwayAnubias' };
+const growth = (rec, t) => 0.5 + 0.5 * (1 - Math.exp(-Math.max(0, t - rec.planted) / (5 * DAY)));
 
 // Every plant has its origin at the root and local y = height above it,
 // so the sway shader can bend it naturally.
@@ -25,69 +37,149 @@ function placeOnSand(obj, x, z) {
   return obj;
 }
 
-export function buildPlants(scene) {
+/** decor: for its colliders (new plants do not sprout inside rocks); world: saved growth. */
+export function buildPlants(scene, world, decor) {
   const group = new THREE.Group();
   scene.add(group);
-  const out = { group, clumps: [] };
-
+  const out = { group, clumps: [], growing: [] };
+  const saved = world.state.plants;
+  const counter = {};
 
   const addClump = (name, x, z, radius) => out.clumps.push({ name, pos: new THREE.Vector3(x, sandHeight(x, z) + 0.6, z), radius });
 
-  // Blender-made plants: one node per variant, origin at the root, swaying with the current
-  const planted = (model, variants, x, z, scale = 1, lift = 0) => {
-    const m = decorNode(model, variants[Math.floor(rand(0, variants.length))]);
-    m.position.set(x, sandHeight(x, z) - 0.03 + lift, z);
-    m.rotation.y = rand(0, Math.PI * 2);
-    m.scale.setScalar(scale * rand(0.85, 1.15));
-    group.add(m);
+  // Every plant model variant is drawn as one instanced mesh (a draw call per variant rather
+  // than per clump). Each plant is a transform-only proxy object; sync() copies the proxies
+  // into the instances after they move or grow.
+  const batches = new Map();
+  const batch = (model, node) => {
+    if (!batches.has(node)) {
+      const src = decorNode(model, node);
+      const mesh = new THREE.InstancedMesh(src.geometry, src.material, 48);
+      mesh.count = 0;
+      mesh.castShadow = src.castShadow;
+      mesh.receiveShadow = true;
+      mesh.frustumCulled = false;
+      group.add(mesh);
+      batches.set(node, { mesh, items: [] });
+    }
+    return batches.get(node);
+  };
+  out.sync = (only) => {
+    for (const [node, b] of batches) {
+      if (only && !node.includes(only)) continue;
+      b.items.forEach((o, i) => { o.updateMatrix(); b.mesh.setMatrixAt(i, o.matrix); });
+      b.mesh.count = b.items.length;
+      b.mesh.instanceMatrix.needsUpdate = true;
+    }
+  };
+
+  // Blender-made plants: origin at the root, swaying with the current.
+  // Each placement remembers when it was planted, its variant, turn and vigour.
+  const now = world.now();
+  const place = (kind, id, x, z, scale, rec) => {
+    const m = new THREE.Object3D();
+    batch(kind, `${NODE[kind]}${rec.variant % VARIANTS[kind]}`).items.push(m);
+    m.position.set(x, sandHeight(x, z) - 0.03, z);
+    m.rotation.y = rec.rot;
+    out.growing.push({ obj: m, kind, id, x, z, base: scale * rec.gene, rec });
+    m.scale.setScalar(scale * rec.gene * growth(rec, now));
     return m;
   };
-  const V = (prefix, n) => Array.from({ length: n }, (_, i) => `${prefix}${i}`);
+  const planted = (kind, x, z, scale = 1) => {
+    counter[kind] = (counter[kind] || 0) + 1;
+    const id = `${kind}-${counter[kind]}`;
+    // the first plants were put in some days before the aquarium opened
+    const rec = saved[id] ||= { planted: world.state.created - rand(3, 9) * DAY, gene: rand(0.85, 1.15), variant: Math.floor(rand(0, 9)), rot: rand(0, Math.PI * 2) };
+    // the first runners come after the aquarium opened
+    if (SPREAD[kind] && !rec.nextRunner) rec.nextRunner = Math.max(rec.planted, world.state.created) + rand(...SPREAD[kind].every) * DAY;
+    return place(kind, id, x, z, scale, rec);
+  };
 
   // ---------- Vallisneria forests along the back ----------
   for (const [cx, cz] of [[-5.3, -2.0], [-5.6, -0.6], [-2.6, -2.05], [-1.6, -1.9], [1.2, -2.15], [5.55, -2.15], [-0.4, -2.1], [3.5, -2.15]]) {
-    planted('vallisneria', V('SwayVallis', 3), cx, cz);
+    planted('vallisneria', cx, cz);
     addClump('заросли валлиснерии', cx, cz + 0.3, 0.6);
   }
 
   // ---------- Amazon swords (rosettes) ----------
   for (const [cx, cz] of [[-2.95, 0.4], [-4.4, 0.45], [-0.5, 0.95], [5.0, 0.35]]) {
-    planted('sword', V('SwaySword', 2), cx, cz, 0.95);
+    planted('sword', cx, cz, 0.95);
     addClump('куст эхинодоруса', cx, cz, 0.7);
   }
 
   // ---------- Cryptocoryne in the foreground ----------
   for (const [cx, cz] of [[-3.5, 1.0], [2.6, 1.15], [-1.9, 1.35], [4.4, 1.6]]) {
-    planted('crypt', V('SwayCrypt', 2), cx, cz, 1.1);
+    planted('crypt', cx, cz, 1.1);
     addClump('криптокорина', cx, cz, 0.4);
   }
 
   // ---------- Stem plants: red ludwigia and feathery limnophila / cabomba ----------
   for (const [cx, cz, kind] of [[-5.55, -1.75, 'ludwigia'], [-1.25, -2.15, 'limnophila'], [0.9, -1.0, 'ludwigia'], [-5.4, 0.9, 'limnophila']]) {
-    planted(kind, V(kind === 'ludwigia' ? 'SwayLudwigia' : 'SwayLimno', 2), cx, cz);
+    planted(kind, cx, cz);
     addClump(kind === 'ludwigia' ? 'красные стебли' : 'лимнофила', cx, cz, 0.5);
   }
   for (const [cx, cz] of [[-3.3, -2.25], [2.7, -2.2], [-1.1, -1.4]]) {
-    planted('cabomba', V('SwayCabomba', 2), cx, cz);
+    planted('cabomba', cx, cz);
     addClump('кабомба', cx, cz + 0.3, 0.5);
   }
 
   // ---------- Anubias tied to driftwood and stones (settled onto them in finishMoss) ----------
   out.onDecor = [];
   for (const [cx, cz] of [[-0.6, -1.3], [1.4, -1.45], [-3.0, 1.15], [3.0, 1.6]]) {
-    out.onDecor.push({ obj: planted('anubias', V('SwayAnubias', 2), cx, cz, 1.3), x: cx, z: cz });
+    out.onDecor.push({ obj: planted('anubias', cx, cz, 1.3), x: cx, z: cz });
   }
+  // young plants that sprouted from runners earlier
+  for (const e of world.state.extraPlants) place(e.kind, e.id, e.x, e.z, e.scale, e);
+
+  /** Growth and spreading up to time t (also used to catch up after an absence). */
+  out.tick = (t) => {
+    let sprouted = 0;
+    for (let i = 0; i < out.growing.length; i++) {   // new plants are appended and spread too
+      const g = out.growing[i], S = SPREAD[g.kind];
+      g.obj.scale.setScalar(g.base * growth(g.rec, t));
+      if (!S) continue;
+      g.rec.nextRunner ||= g.rec.planted + rand(...S.every) * DAY;
+      while (g.rec.nextRunner <= t) {
+        const at = g.rec.nextRunner;
+        g.rec.nextRunner += rand(...S.every) * DAY;
+        if (out.growing.filter((o) => o.kind === g.kind).length >= S.cap) break;
+        const spot = freeSpot(g.x, g.z, S.dist);
+        if (!spot) continue;
+        const id = `${g.kind}-r${world.state.extraPlants.length + 1}`;
+        const rec = { id, kind: g.kind, x: spot[0], z: spot[1], scale: g.base / g.rec.gene, planted: at, gene: rand(0.85, 1.15), variant: Math.floor(rand(0, 9)), rot: rand(0, Math.PI * 2) };
+        world.state.extraPlants.push(rec);
+        const m = place(g.kind, id, rec.x, rec.z, rec.scale, rec);
+        m.scale.setScalar(rec.scale * rec.gene * growth(rec, t));
+        world.log('plant', `${S.title} пустила новый побег — рядом вырос молодой куст`, at);
+        sprouted++;
+      }
+    }
+    out.sync();
+    return sprouted;
+  };
+  // a free patch of sand near (x, z): inside the tank, clear of rocks and other plants
+  const freeSpot = (x, z, [d0, d1]) => {
+    for (let k = 0; k < 12; k++) {
+      const a = rand(0, Math.PI * 2), d = rand(d0, d1);
+      const px = x + Math.cos(a) * d, pz = z + Math.sin(a) * d * 0.7;
+      if (Math.abs(px) > 5.5 || pz < -2.2 || pz > 2.0) continue;
+      if (decor.colliders.some((c) => c.c.y - c.r < 0.7 && Math.hypot(c.c.x - px, c.c.z - pz) < c.r * 0.9 + 0.2)) continue;
+      if (out.growing.some((o) => Math.hypot(o.x - px, o.z - pz) < 0.42)) continue;
+      return [px, pz];
+    }
+    return null;
+  };
 
   // ---------- Water lettuce floating on the surface ----------
   out.floaters = [];
   for (const [x, z] of [[-3.2, -0.6], [-1.0, 0.9], [1.9, -1.2], [3.6, 0.4], [-4.6, 1.0]]) {
     const i = Math.floor(rand(0, 3));
-    const f = new THREE.Group();
-    f.add(decorNode('pistia', `SwayPistia${i}`), decorNode('pistia', `RootsPistia${i}`));
+    const f = new THREE.Object3D();   // leaves and roots share the floater's transform
+    batch('pistia', `SwayPistia${i}`).items.push(f);
+    batch('pistia', `RootsPistia${i}`).items.push(f);
     f.position.set(x, TANK.waterY - 0.03, z);
     f.rotation.y = rand(0, Math.PI * 2);
     f.scale.setScalar(rand(0.9, 1.3));
-    group.add(f);
     out.floaters.push({ obj: f, x, z, ph: rand(0, 6) });
   }
 
@@ -190,6 +282,7 @@ export function buildPlants(scene) {
 // epiphytes (anubias) sit on whatever they are tied to.
 export function finishMoss(plants, eco) {
   for (const a of plants.onDecor) a.obj.position.y = eco.surfaceAt(a.x, a.z) - 0.04;
+  plants.sync();
   const { inst, centers, N } = plants._mossPending;
   let k = plants._mossPending.k;
   const m = new THREE.Matrix4(), q = new THREE.Quaternion(), s = new THREE.Vector3(), p = new THREE.Vector3();
@@ -226,4 +319,5 @@ export function updatePlants(plants, t, night) {
     f.obj.position.y = TANK.waterY - 0.03 + Math.sin(t * 0.9 + f.ph) * 0.01;
     f.obj.rotation.y += 0.0004;
   }
+  plants.sync('Pistia');
 }

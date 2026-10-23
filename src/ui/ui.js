@@ -1,4 +1,9 @@
 // Minimal glass UI. All DOM, no framework.
+import { SPECIES } from '../life/species.js';
+import { STAGE, RARE } from '../life/lifecycle.js';
+import { duration } from '../life/words.js';
+
+const PREFS = 'aq.settings';
 const h = (tag, cls, html) => { const e = document.createElement(tag); if (cls) e.className = cls; if (html != null) e.innerHTML = html; return e; };
 
 const ICONS = {
@@ -39,6 +44,7 @@ export class UI {
       const order = ['auto', 'day', 'evening', 'night'];
       const m = order[(order.indexOf(app.day.mode) + 1) % order.length];
       app.day.setMode(m);
+      this.savePref('dayMode', m);
       b.querySelector('.lbl').textContent = { auto: 'Авто', day: 'День', evening: 'Вечер', night: 'Ночь' }[m];
       this.hint(m === 'auto' ? 'Смена дня и ночи: автоматически' : `Освещение: ${b.querySelector('.lbl').textContent}`);
     });
@@ -57,6 +63,14 @@ export class UI {
     this.card = h('div', 'card hidden');
     root.appendChild(this.card);
 
+    // saved settings (applied before the panels show their values)
+    this.showStories = true;
+    try { this.prefs = JSON.parse(localStorage.getItem(PREFS) || '{}'); } catch (e) { this.prefs = {}; }
+    for (const [k, v] of Object.entries(this.prefs)) {
+      if (k === 'master' || k === 'music' || k === 'fx') app.audio.setVolume(k, v);
+      else if (k !== 'tab') this.applyPref(k, v);
+    }
+
     // panels
     this.panels = {};
     this.panels.roster = this.buildRoster();
@@ -73,7 +87,6 @@ export class UI {
       clearTimeout(moveT);
       moveT = setTimeout(() => this.exitBtn.classList.remove('show'), 2200);
     });
-    this.showStories = true;
   }
 
   hint(text) {
@@ -108,14 +121,16 @@ export class UI {
   buildRoster() {
     const p = h('div', 'panel roster');
     p.innerHTML = `<div class="panel-head"><span>Обитатели</span><button class="x">✕</button></div>
-      <div class="tabs"><button data-t="list" class="on">Жители</button><button data-t="log">Дневник</button></div>
-      <div class="roster-body"></div><div class="log-body hidden"></div><div class="secrets"></div>`;
+      <div class="tabs"><button data-t="list" class="on">Жители</button><button data-t="hist">История</button><button data-t="log">Сейчас</button></div>
+      <div class="roster-body"></div><div class="hist-body hidden"></div><div class="log-body hidden"></div><div class="secrets"></div>`;
     p.querySelector('.x').addEventListener('click', () => p.classList.remove('open'));
     p.querySelectorAll('.tabs button').forEach((b) => b.addEventListener('click', () => {
       p.querySelectorAll('.tabs button').forEach((x) => x.classList.toggle('on', x === b));
       p.querySelector('.roster-body').classList.toggle('hidden', b.dataset.t !== 'list');
+      p.querySelector('.hist-body').classList.toggle('hidden', b.dataset.t !== 'hist');
       p.querySelector('.log-body').classList.toggle('hidden', b.dataset.t !== 'log');
       if (b.dataset.t === 'log') this.renderLog();
+      if (b.dataset.t === 'hist') this.renderHistory();
     }));
     p.addEventListener('pointerdown', (e) => e.stopPropagation());
     this.root.appendChild(p);
@@ -129,17 +144,29 @@ export class UI {
     const groups = new Map();
     for (const f of eco.fish) {
       if (f.hidden && f.sp.rare) continue;
-      if (!groups.has(f.sp.title)) groups.set(f.sp.title, []);
-      groups.get(f.sp.title).push(f);
+      if (!groups.has(f.sp.title)) groups.set(f.sp.title, { sp: f.sp, list: [] });
+      groups.get(f.sp.title).list.push(f);
     }
     for (const c of eco.critters) {
-      if (!groups.has(c.title)) groups.set(c.title, []);
-      groups.get(c.title).push(c);
+      if (!groups.has(c.title)) groups.set(c.title, { list: [] });
+      groups.get(c.title).list.push(c);
     }
-    for (const [title, list] of groups) {
+    const order = { fry: 0, juvenile: 1, adult: 2, elder: 3 };
+    for (const [title, { sp, list }] of groups) {
+      const cap = sp?.life.breed?.cap;
       const g = h('div', 'group', `<div class="gtitle">${title} <span>${list.length}</span></div>`);
+      if (sp && !sp.rare && list.length < (cap || sp.count)) {
+        // the user may bring in another fish of this kind
+        const add = h('button', 'add', '+');
+        add.title = 'Добавить ещё одну';
+        add.addEventListener('click', (e) => { e.stopPropagation(); const f = eco.addFish(sp.id); if (f) { this.renderRoster(); this.hint(`${sp.title} ${f.name} теперь живёт в аквариуме`); } });
+        g.firstChild.appendChild(add);
+      }
+      if (sp) list.sort((a, b) => order[b.stage] - order[a.stage]);
       for (const f of list) {
-        const row = h('div', 'row', `<span class="nm">${f.name}</span><span class="st">${f.statusText ? f.statusText() : critterStatus(f)}</span>`);
+        const tag = f.stage && f.stage !== 'adult' ? `<i class="badge ${f.stage}">${STAGE[f.stage]}</i>` : '';
+        const rare = f.rec?.gene.rare ? '<i class="badge rare" title="Редкий окрас">✦</i>' : '';
+        const row = h('div', 'row', `<span class="nm">${f.name}${tag}${rare}</span><span class="st">${f.statusText ? f.statusText() : critterStatus(f)}</span>`);
         row.addEventListener('click', () => this.app.select(f, true));
         g.appendChild(row);
       }
@@ -147,6 +174,55 @@ export class UI {
     }
     const found = (eco.store.secrets || []).length;
     this.panels.roster.querySelector('.secrets').textContent = `Найдено секретов: ${found} из 6`;
+  }
+
+  /** The aquarium's history, newest first, grouped by day. */
+  renderHistory() {
+    const body = this.panels.roster.querySelector('.hist-body');
+    const hist = this.app.eco.world.state.history.slice().reverse();
+    body.innerHTML = hist.length ? '' : '<div class="empty">История только начинается…</div>';
+    let lastDay = '';
+    for (const e of hist) {
+      const d = new Date(e.t);
+      const day = d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' });
+      if (day !== lastDay) { body.appendChild(h('div', 'hday', day)); lastDay = day; }
+      body.appendChild(h('div', `hist ${e.kind}`, `<span class="tm">${d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}</span>${e.text}`));
+    }
+  }
+
+  /** "While you were away…": the pleasant changes since the last visit. */
+  showAway(a) {
+    if (!a) return;
+    const items = [];
+    const kids = a.births.reduce((n, e) => n + e.kids.length, 0);
+    if (kids) {
+      const bySp = {};
+      for (const e of a.births) bySp[SPECIES[e.f.sp].title] = (bySp[SPECIES[e.f.sp].title] || 0) + e.kids.length;
+      items.push(`Появились мальки: ${kids} — ${Object.entries(bySp).map(([t, n]) => `${t.toLowerCase()} ×${n}`).join(', ')}`);
+      const rare = a.births.flatMap((e) => e.kids).find((k) => k.gene.rare);
+      if (rare) items.push(`Среди них ${rare.name} — ${RARE[rare.gene.rare].title}!`);
+    }
+    if (a.pairs.length === 1) items.push(`${a.pairs[0].f.name} и ${a.pairs[0].m.name} стали парой`);
+    else if (a.pairs.length) items.push(`Новых пар: ${a.pairs.length} — например, ${a.pairs[0].f.name} и ${a.pairs[0].m.name}`);
+    if (a.grew.juvenile) items.push(`Подросли мальки: ${a.grew.juvenile}`);
+    if (a.grew.adult) items.push(`Стали взрослыми: ${a.grew.adult}`);
+    for (const s of a.schools) items.push(`Стая «${s.sp.title}» выросла: было ${s.from}, теперь ${s.to}`);
+    if (a.plants) items.push(`Растения разрослись: молодых кустов — ${a.plants}`);
+    else if (a.away > 86400000) items.push('Растения заметно подросли');
+    if (!items.length) items.push('Рыбки спокойно жили своей жизнью — и, кажется, ждали вас');
+    const el = h('div', 'away', `<div class="away-title">Пока вас не было…</div><div class="away-sub">прошло ${duration(a.away)}</div>
+      <ul>${items.map((t) => `<li>${t}</li>`).join('')}</ul>
+      <div class="away-actions"><button class="go">Смотреть</button>${kids ? '<button class="kids">Показать малышей</button>' : ''}</div>`);
+    const close = () => { el.classList.remove('in'); setTimeout(() => el.remove(), 500); };
+    el.querySelector('.go').addEventListener('click', close);
+    el.querySelector('.kids')?.addEventListener('click', () => {
+      close();
+      const fry = this.app.eco.fish.filter((f) => f.stage === 'fry' && !f.hidden);
+      if (fry.length) this.app.select(fry[Math.floor(Math.random() * fry.length)]);
+    });
+    el.addEventListener('pointerdown', (e) => e.stopPropagation());
+    this.root.appendChild(el);
+    requestAnimationFrame(() => el.classList.add('in'));
   }
 
   renderLog() {
@@ -159,41 +235,114 @@ export class UI {
     }
   }
 
+  /** Settings remembered between visits (quality, auto resolution and the FPS line keep their own keys). */
+  loadPrefs() {
+    try { this.prefs = JSON.parse(localStorage.getItem('aq.settings') || '{}'); } catch (e) { this.prefs = {}; }
+    const P = this.prefs, app = this.app;
+    for (const k of ['master', 'music', 'fx']) if (P[k] != null) app.audio.setVolume(k, P[k]);
+    if (P.bloom != null) app.post.bloom.strength = P.bloom;
+    if (P.exposure != null) app.dayCtx.exposureMul = P.exposure;
+    if (P.cycle != null) app.day.cycleMinutes = P.cycle;
+    if (P.dof != null) app.director.dofOn = P.dof;
+    if (P.stories != null) this.showStories = P.stories;
+    if (P.dayMode) {
+      app.day.setMode(P.dayMode);
+      this.dayBtn.querySelector('.lbl').textContent = { auto: 'Авто', day: 'День', evening: 'Вечер', night: 'Ночь' }[P.dayMode];
+    }
+  }
+  savePref(k, v) {
+    this.prefs[k] = v;
+    try { localStorage.setItem('aq.settings', JSON.stringify(this.prefs)); } catch (e) { /* ignore */ }
+  }
+
   buildSettings() {
     const app = this.app;
+    const P = this.prefs;
+    const F = app.eco.world.state.feeder;
     const p = h('div', 'panel settings');
+    const range = (k, label, min, max, step, value) =>
+      `<label><span class="lab">${label} <b data-v="${k}"></b></span><input type="range" min="${min}" max="${max}" step="${step}" data-k="${k}" value="${value}"></label>`;
+    const check = (k, label, on) => `<label class="chk"><input type="checkbox" data-k="${k}" ${on ? 'checked' : ''}> ${label}</label>`;
+    let fpsOn = true;
+    try { fpsOn = localStorage.getItem('aq.fps') !== '0'; } catch (e) { /* ignore */ }
     p.innerHTML = `<div class="panel-head"><span>Настройки</span><button class="x">✕</button></div>
-      <label>Громкость <input type="range" min="0" max="1" step="0.01" data-k="master" value="${app.audio.vol.master}"></label>
-      <label>Музыка <input type="range" min="0" max="1" step="0.01" data-k="music" value="${app.audio.vol.music}"></label>
-      <label>Звуки воды <input type="range" min="0" max="1" step="0.01" data-k="fx" value="${app.audio.vol.fx}"></label>
-      <label>Свечение (bloom) <input type="range" min="0" max="1.5" step="0.01" data-k="bloom" value="${app.post.bloom.strength}"></label>
-      <label>Яркость <input type="range" min="0.6" max="1.6" step="0.01" data-k="exposure" value="1"></label>
-      <label>Длина суток, мин <input type="range" min="2" max="30" step="1" data-k="cycle" value="${app.day.cycleMinutes}"></label>
-      <label class="chk"><input type="checkbox" data-k="dof" checked> Глубина резкости</label>
-      <label class="chk"><input type="checkbox" data-k="stories" checked> Показывать истории</label>
-      <label>Качество графики <select data-k="quality">
-        <option value="low">Низкое</option><option value="medium">Среднее</option><option value="high">Высокое</option><option value="ultra">Ультра (HiDPI)</option>
-      </select></label>
-      <label class="chk"><input type="checkbox" data-k="fps" ${(() => { try { return localStorage.getItem('aq.fps') === '0' ? '' : 'checked'; } catch (e) { return 'checked'; } })()}> Показывать FPS и видеокарту</label>
-      <div class="tip">Совет: кликните по стеклу, чтобы постучать. Наведите на рыбку, чтобы узнать имя. В аквариуме спрятано несколько секретов…</div>`;
+      <div class="tabs"><button data-t="life">Аквариум</button><button data-t="view">Изображение</button><button data-t="sound">Звук</button></div>
+      <div class="set-body" data-p="life">
+        <div class="sect">Автокормушка</div>
+        ${check('feeder', 'Кормить по расписанию', F.on)}
+        <label>Кормлений в день <select data-k="perDay"><option value="2">2 раза</option><option value="3">3 раза</option><option value="4">4 раза</option></select></label>
+        <label>Корм <select data-k="food"><option value="flakes">Хлопья</option><option value="pellets">Гранулы — для донных рыб</option><option value="worms">Мотыль — лакомство</option></select></label>
+        <div class="sect">Время и события</div>
+        ${range('cycle', 'Длина суток', 2, 30, 1, app.day.cycleMinutes)}
+        ${check('stories', 'Показывать истории', this.showStories)}
+        <div class="tip">Кликните по стеклу, чтобы постучать. Наведите на рыбку, чтобы узнать имя. В аквариуме спрятано несколько секретов…</div>
+      </div>
+      <div class="set-body" data-p="view">
+        <label>Качество графики <select data-k="quality">
+          <option value="low">Низкое</option><option value="medium">Среднее</option><option value="high">Высокое</option><option value="ultra">Ультра (HiDPI)</option>
+        </select></label>
+        ${check('autores', 'Авто-разрешение: держать 30+ FPS', app.res.auto)}
+        ${check('dof', 'Глубина резкости', app.director.dofOn)}
+        ${range('bloom', 'Свечение', 0, 1.5, 0.01, app.post.bloom.strength)}
+        ${range('exposure', 'Яркость', 0.6, 1.6, 0.01, app.dayCtx.exposureMul)}
+        ${check('fps', 'Показывать FPS и видеокарту', fpsOn)}
+      </div>
+      <div class="set-body" data-p="sound">
+        ${range('master', 'Громкость', 0, 1, 0.01, app.audio.vol.master)}
+        ${range('music', 'Музыка', 0, 1, 0.01, app.audio.vol.music)}
+        ${range('fx', 'Звуки воды', 0, 1, 0.01, app.audio.vol.fx)}
+      </div>`;
     p.querySelector('.x').addEventListener('click', () => p.classList.remove('open'));
     p.addEventListener('pointerdown', (e) => e.stopPropagation());
+
+    // tabs: the last one opened is remembered
+    const show = (t) => {
+      p.querySelectorAll('.tabs button').forEach((b) => b.classList.toggle('on', b.dataset.t === t));
+      p.querySelectorAll('.set-body').forEach((b) => b.classList.toggle('hidden', b.dataset.p !== t));
+      P.tab = t;
+    };
+    p.querySelectorAll('.tabs button').forEach((b) => b.addEventListener('click', () => { show(b.dataset.t); this.savePrefs(); }));
+    show(P.tab || 'life');
+
+    // slider readouts
+    const fmt = {
+      cycle: (v) => `${v} мин`, bloom: (v) => `${Math.round(v * 100)}%`, exposure: (v) => `${Math.round(v * 100)}%`,
+      master: (v) => `${Math.round(v * 100)}%`, music: (v) => `${Math.round(v * 100)}%`, fx: (v) => `${Math.round(v * 100)}%`,
+    };
+    const readout = (k, v) => { const el = p.querySelector(`b[data-v="${k}"]`); if (el) el.textContent = fmt[k](v); };
+    p.querySelectorAll('input[type="range"]').forEach((inp) => readout(inp.dataset.k, parseFloat(inp.value)));
+
+    for (const k of ['perDay', 'food']) {
+      const sel = p.querySelector(`select[data-k="${k}"]`);
+      sel.value = String(F[k]);
+      sel.addEventListener('change', () => { F[k] = k === 'perDay' ? Number(sel.value) : sel.value; app.eco.save(); });
+    }
     const qs = p.querySelector('select[data-k="quality"]');
     try { qs.value = localStorage.getItem('aq.quality') || 'medium'; } catch (e) { qs.value = 'medium'; }
     qs.addEventListener('change', () => { app.setQuality(qs.value); this.hint(`Качество: ${qs.options[qs.selectedIndex].text}`); });
     p.querySelectorAll('input').forEach((inp) => inp.addEventListener('input', () => {
       const k = inp.dataset.k, v = inp.type === 'checkbox' ? inp.checked : parseFloat(inp.value);
-      if (k === 'master' || k === 'music' || k === 'fx') { app.audio.start(); app.audio.setVolume(k, v); }
-      if (k === 'bloom') app.post.bloom.strength = v;
-      if (k === 'exposure') app.dayCtx.exposureMul = v;
-      if (k === 'cycle') app.day.cycleMinutes = v;
-      if (k === 'dof') app.director.dofOn = v;
-      if (k === 'stories') this.showStories = v;
+      if (inp.type === 'range') readout(k, v);
       if (k === 'fps') app.setFps(v);
+      else if (k === 'autores') app.setAutoRes(v);
+      else if (k === 'feeder') { F.on = v; app.eco.save(); this.hint(v ? 'Автокормушка включена' : 'Автокормушка выключена — рыбки не пропадут, просто кормите сами, когда захочется'); }
+      else { P[k] = v; this.applyPref(k, v); this.savePrefs(); }
     }));
     this.root.appendChild(p);
     return p;
   }
+
+  /** Settings that live in this UI's own store (volumes, look, day length, stories). */
+  applyPref(k, v) {
+    const app = this.app;
+    if (k === 'master' || k === 'music' || k === 'fx') { app.audio.start(); app.audio.setVolume(k, v); }
+    if (k === 'bloom') app.post.bloom.strength = v;
+    if (k === 'exposure') app.dayCtx.exposureMul = v;
+    if (k === 'cycle') app.day.cycleMinutes = v;
+    if (k === 'dof') app.director.dofOn = v;
+    if (k === 'stories') this.showStories = v;
+  }
+  savePrefs() { try { localStorage.setItem(PREFS, JSON.stringify(this.prefs)); } catch (e) { /* ignore */ } }
 
   // ------------------------------------------------------------ card
   showCard(c) {
@@ -210,11 +359,13 @@ export class UI {
       this.card.innerHTML = `
         <button class="x">✕</button>
         <div class="name-row"><span class="name">${c.name}</span><button class="edit" title="Переименовать">✎</button></div>
-        <div class="species">${isFish ? c.sp.title : c.title}</div>
+        <div class="species">${isFish ? `${c.sp.title}${c.sp.life.breed ? ` <span class="sex">${c.sex === 'f' ? '♀' : '♂'}</span>` : ''}` : c.title}</div>
+        ${isFish && c.rec.gene.rare ? `<div class="rare-tag">✦ ${RARE[c.rec.gene.rare].title}</div>` : ''}
         ${isFish ? `<div class="trait">${c.character}</div>
+        <div class="kv"><span>Возраст</span><b class="age"></b></div>
         <div class="kv"><span>Любимое место</span><b class="fav"></b></div>` : ''}
         <div class="kv"><span>Сейчас</span><b class="status"></b></div>
-        ${isFish ? `<div class="bar"><span>Сытость</span><i><em class="full"></em></i></div>
+        ${isFish ? `<div class="kv small"><span>Семья</span><b class="family"></b></div>
         <div class="kv small"><span>Друзья</span><b class="friends"></b></div>
         <div class="kv small"><span>Помнит</span><b class="memory"></b></div>` : ''}
         <div class="actions"><button class="follow">${this.app.director.mode === 'follow' ? 'Не следить' : 'Следить'}</button></div>`;
@@ -231,7 +382,14 @@ export class UI {
     q('.status').textContent = isFish ? c.statusText() : critterStatus(c);
     if (isFish) {
       q('.fav').textContent = c.fav.name;
-      q('.full').style.width = `${Math.round((1 - c.hunger) * 100)}%`;
+      const w = this.app.eco.world;
+      q('.age').textContent = `${STAGE[c.stage]} · ${duration(w.now() - c.rec.born)}`;
+      const fam = [];
+      if (c.mate) fam.push(`пара — ${c.mate.name}`);
+      if (c.rec.parentNames) fam.push(`родители — ${c.rec.parentNames.join(' и ')}`);
+      const kids = w.fish.filter((r) => r.parents?.includes(c.uid)).length;
+      if (kids) fam.push(`мальков — ${kids}`);
+      q('.family').textContent = fam.length ? fam.join(' · ') : 'пока сам по себе';
       const friends = [...c.mem.friends.entries()].filter(([, v]) => v > 0.12).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([id]) => this.app.eco.byId.get(id)?.name).filter(Boolean);
       q('.friends').textContent = friends.length ? friends.join(', ') : 'пока нет';
       const m = c.mem.last;
@@ -272,6 +430,7 @@ export class UI {
       const rows = this.panels.roster.querySelectorAll('.roster-body .row .st');
       if (rows.length) this.renderRoster();
     }
+    if (this.panels.roster.classList.contains('open') && this._uiT % 300 === 0 && !this.panels.roster.querySelector('.hist-body').classList.contains('hidden')) this.renderHistory();
   }
 }
 

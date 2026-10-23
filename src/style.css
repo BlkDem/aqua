@@ -83,9 +83,6 @@ body.immersive .ui * { pointer-events: none !important; }
 .card .kv span { color: var(--muted); flex: none; }
 .card .kv b { font-weight: 600; text-align: right; }
 .card .kv.small { font-size: 12px; }
-.card .bar { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--muted); padding: 6px 0; }
-.card .bar i { flex: 1; height: 6px; border-radius: 6px; background: rgba(255, 255, 255, 0.1); overflow: hidden; }
-.card .bar em { display: block; height: 100%; background: linear-gradient(90deg, #ffb35a, #ffd479); border-radius: 6px; transition: width 0.6s; }
 .card .actions { margin-top: 10px; display: flex; gap: 8px; }
 .card .actions button { flex: 1; padding: 8px; border-radius: 12px; border: 1px solid var(--edge); background: rgba(127, 227, 255, 0.12); cursor: pointer; font-weight: 700; }
 .card .actions button:hover { background: rgba(127, 227, 255, 0.24); }
@@ -95,7 +92,8 @@ body.immersive .ui * { pointer-events: none !important; }
   background: rgba(10, 22, 32, 0.55); backdrop-filter: blur(16px) saturate(140%); -webkit-backdrop-filter: blur(16px) saturate(140%); border: 1px solid var(--edge);
   box-shadow: 0 16px 50px rgba(0, 0, 0, 0.4); pointer-events: none; opacity: 0; transform: translateY(14px); transition: opacity 0.3s, transform 0.3s; }
 .panel.open { opacity: 1; transform: none; pointer-events: auto; }
-.panel.settings { left: auto; right: 20px; width: 300px; }
+.panel.settings { left: auto; right: 20px; width: 310px; height: min(calc(100vh - 130px), 440px); max-height: none; }
+.set-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; scrollbar-width: thin; padding-right: 4px; }
 .panel-head { display: flex; justify-content: space-between; align-items: center; font-weight: 800; font-size: 17px; margin-bottom: 10px; }
 .tabs { display: flex; gap: 6px; margin-bottom: 8px; }
 .tabs button { flex: 1; border: 1px solid transparent; background: rgba(255, 255, 255, 0.06); border-radius: 10px; padding: 6px; cursor: pointer; font-weight: 700; font-size: 12.5px; color: var(--muted); }
@@ -115,6 +113,8 @@ body.immersive .ui * { pointer-events: none !important; }
 .empty { color: var(--muted); font-size: 13px; padding: 10px 4px; }
 .secrets { margin-top: 8px; font-size: 12px; color: var(--gold); opacity: 0.85; }
 .settings label { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; color: var(--muted); margin: 6px 0; }
+.settings label .lab { display: flex; justify-content: space-between; }
+.settings label .lab b { color: var(--text); font-weight: 700; font-variant-numeric: tabular-nums; }
 .settings label.chk { flex-direction: row; align-items: center; gap: 8px; color: var(--text); }
 .settings input[type='range'] { width: 100%; accent-color: var(--accent); }
 .settings .tip { margin-top: 10px; font-size: 12px; color: var(--muted); line-height: 1.4; }
@@ -134,3 +134,36 @@ body.immersive .exit-btn.show { opacity: 1; pointer-events: auto; }
 .fps.warn { color: #ff8a6a; font-weight: 700; }
 .settings select { width: 100%; padding: 6px 8px; border-radius: 10px; border: 1px solid var(--edge); background: rgba(0, 0, 0, 0.3); color: var(--text); font: inherit; font-size: 13px; }
 .settings select option { background: #0c1a24; }
+
+/* life: stages, history, "while you were away" */
+.gtitle { display: flex; align-items: center; gap: 6px; }
+.gtitle .add { margin-left: auto; width: 22px; height: 22px; border-radius: 8px; border: 1px solid var(--edge); background: rgba(127, 227, 255, 0.12); color: var(--text); cursor: pointer; font-weight: 800; line-height: 1; pointer-events: auto; }
+.gtitle .add:hover { background: rgba(127, 227, 255, 0.28); }
+.badge { font-style: normal; font-size: 10.5px; font-weight: 700; margin-left: 6px; padding: 1px 6px; border-radius: 999px; background: rgba(127, 227, 255, 0.14); color: var(--accent); vertical-align: 1px; }
+.badge.fry { background: rgba(255, 212, 121, 0.16); color: var(--gold); }
+.badge.elder { background: rgba(255, 255, 255, 0.1); color: var(--muted); }
+.badge.rare { background: none; color: var(--gold); padding: 0; }
+.card .sex { color: var(--muted); font-weight: 800; }
+.card .rare-tag { margin-top: 6px; font-size: 12px; font-weight: 700; color: var(--gold); }
+.hist-body { overflow-y: auto; scrollbar-width: thin; padding-right: 4px; }
+.hday { position: sticky; top: 0; padding: 6px 4px 4px; font-size: 12px; font-weight: 800; letter-spacing: 0.04em; color: var(--accent); background: rgba(10, 22, 32, 0.85); }
+.hist { font-size: 13px; padding: 5px 4px; border-bottom: 1px solid rgba(255, 255, 255, 0.05); line-height: 1.35; }
+.hist .tm { color: var(--muted); font-size: 11px; margin-right: 8px; font-variant-numeric: tabular-nums; }
+.hist.birth, .hist.rare, .hist.grew { color: var(--gold); }
+.hist.pair, .hist.friends { color: #ffc2e2; }
+.hist.plant { color: #b9f2a0; }
+.hist.farewell { color: var(--muted); font-style: italic; }
+.settings .sect { margin: 12px 0 2px; font-size: 11px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); }
+.settings .set-body > .sect:first-child { margin-top: 2px; }
+.away { position: absolute; left: 50%; top: 50%; width: min(420px, calc(100vw - 32px)); transform: translate(-50%, -46%); padding: 22px 24px 18px; border-radius: 22px; pointer-events: auto;
+  background: linear-gradient(160deg, rgba(30, 60, 80, 0.7), rgba(8, 18, 28, 0.72)); backdrop-filter: blur(18px) saturate(140%); -webkit-backdrop-filter: blur(18px) saturate(140%);
+  border: 1px solid var(--edge); box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5); opacity: 0; transition: opacity 0.5s, transform 0.5s; }
+.away.in { opacity: 1; transform: translate(-50%, -50%); }
+.away-title { font-size: 24px; font-weight: 800; }
+.away-sub { color: var(--muted); font-size: 13px; margin-top: 2px; }
+.away ul { margin: 14px 0 16px; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }
+.away li { position: relative; padding-left: 18px; font-size: 14.5px; line-height: 1.35; }
+.away li::before { content: ''; position: absolute; left: 2px; top: 7px; width: 7px; height: 7px; border-radius: 50%; background: var(--gold); box-shadow: 0 0 10px var(--gold); }
+.away-actions { display: flex; gap: 8px; }
+.away-actions button { flex: 1; padding: 9px; border-radius: 12px; border: 1px solid var(--edge); background: rgba(127, 227, 255, 0.14); color: var(--text); cursor: pointer; font: inherit; font-weight: 800; }
+.away-actions button:hover { background: rgba(127, 227, 255, 0.28); }

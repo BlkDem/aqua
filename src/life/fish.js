@@ -1,38 +1,59 @@
 import * as THREE from 'three';
-import { buildFishModel, buildAssetFishModel } from './fishModel.js';
+import { buildFishModel } from './fishModel.js';
 import { ASSETS } from './fishAssets.js';
+import { SPECIES } from './species.js';
+import { stageOf, growthOf } from './lifecycle.js';
 import { rand, pick, clamp, mulberry32 } from '../fx/shaderPatch.js';
 
 const V = () => new THREE.Vector3();
 const _a = V(), _b = V(), _c = V(), _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _q2 = new THREE.Quaternion();
 const UP = new THREE.Vector3(0, 1, 0), ZERO = new THREE.Vector3();
+const PICK = new THREE.MeshBasicMaterial();
 
 export const BOUNDS = { x: 5.55, zMin: -2.05, zMax: 2.05, yMax: 5.35 };
 
-const ACTIVE = new Set(['IDLE', 'EXPLORE', 'SCHOOL', 'RETURN', 'INVESTIGATE', 'PLAY', 'FOLLOW', 'SOCIALIZE', 'PATROL']);
+const ACTIVE = new Set(['IDLE', 'EXPLORE', 'SCHOOL', 'RETURN', 'INVESTIGATE', 'PLAY', 'FOLLOW', 'SOCIALIZE', 'PATROL', 'NURSERY', 'COURT']);
 
 export class Fish {
-  constructor(eco, sp, idx, variant, persona) {
+  /** rec: the saved record (see world.js): name, sex, birth, inherited looks and character. */
+  constructor(eco, rec, idx) {
+    const sp = SPECIES[rec.sp];
     this.eco = eco;
     this.sp = sp;
+    this.rec = rec;
     this.kind = 'fish';
     this.idx = idx;
-    this.key = persona.key;
+    this.uid = rec.uid;
     this.id = eco.nextId++;
-    this.name = persona.name;
-    this.variant = variant;
-    const R = mulberry32(persona.seed);
+    this.name = rec.name;
+    this.sex = rec.sex;
+    const R = mulberry32(rec.uid * 7919 + 17);
     this.R = R;
-    // --- personality ---
-    const P = {};
-    for (const k of Object.keys(sp.traits)) P[k] = clamp(sp.traits[k] + (R() - 0.5) * 0.55, 0, 1);
-    this.p = P;
-    this.scale = 0.85 + R() * 0.3;
+    this.p = { ...rec.traits };
+    // --- visual: the inherited colour variant and tint, size from age and genes ---
+    const vi = rec.gene.variant % (sp.variants?.length || 1);
+    this.variant = sp.variants ? sp.variants[vi] : null;
+    const key = sp.texVariants ? `${sp.id}-${vi}` : sp.id;
+    if (ASSETS[key]) {
+      // drawn by the shared instanced meshes of its model; the root only carries the transform
+      const batch = eco.fishBatch(sp, key, ASSETS[key]);
+      this.root = new THREE.Object3D();
+      this.body = new THREE.Mesh(batch.pickGeo, PICK);   // invisible stand-in for picking
+      this.body.visible = false;
+      this.root.add(this.body);
+      this.wag = { value: new THREE.Vector4(0, sp.swim.amp * sp.len, 0, sp.len) };
+      this.pect = { value: 0.55 };
+      this.glowU = batch.glow;
+      batch.add(this, rec.gene.tint);
+    } else {
+      const model = buildFishModel(sp, this.variant, R);
+      Object.assign(this, { root: model.root, body: model.body, wag: model.wag, pect: model.pect, glowU: model.glow });
+      model.bodyMat.color.setRGB(...rec.gene.tint);
+      model.finMat.color.setRGB(...rec.gene.tint);
+    }
+    this.updateLife(eco.world.now());
+    this.scale = this.targetScale;
     this.size = sp.len * this.scale;
-    // --- visual ---
-    const asset = ASSETS[sp.texVariants ? `${sp.id}-${idx % sp.variants.length}` : sp.id];
-    const model = asset ? buildAssetFishModel(sp, asset) : buildFishModel(sp, variant, R);
-    Object.assign(this, { root: model.root, body: model.body, wag: model.wag, pect: model.pect, glowU: model.glow, bodyMat: model.bodyMat, finMat: model.finMat });
     this.root.scale.setScalar(this.scale);
     this.body.userData.fish = this;
     this.root.traverse((o) => { if (o.isMesh) o.userData.fish = this; });
@@ -48,8 +69,6 @@ export class Fish {
     this.pectBrake = 0;
     this.pectS = 0; // smoothed for the fin animation
     this.pectB = 0;
-    // peak-to-peak tail-tip excursion at cruise: peduncle sway plus the part of the caudal fin
-    // that swings with it (long soft tails mostly trail)
     // slow cruisers (under ~1.5 body lengths/s) keep fanning their pectorals all the time
     this.idleScull = 0.35 * clamp(1 - sp.swim.cruise / sp.len / 1.5, 0, 1);
     this.phase = R() * 10;
@@ -73,6 +92,24 @@ export class Fish {
     this.hidden = false; // for rare/nocturnal species
   }
 
+  /** Age-dependent state: life stage, body size and swimming speed. */
+  updateLife(t) {
+    this.stage = stageOf(this.rec, t);
+    this.growth = growthOf(this.rec, t);
+    this.targetScale = this.growth * this.rec.gene.size;
+    this.speedK = (0.45 + 0.55 * this.growth) * (this.stage === 'elder' ? 0.85 : 1);
+    // how far a youngster dares to stray from where it hatched
+    this.independence = clamp((this.growth - 0.3) / 0.45, 0, 1);
+  }
+
+  get mate() { return this.rec.mate ? this.eco.byUid.get(this.rec.mate) || null : null; }
+
+  /** Where a youngster grows up: the spot it hatched at, or its favourite place. */
+  nurseryPos() {
+    const s = this.rec.nursery && this.eco.spotByName(this.rec.nursery);
+    return (s || this.fav).pos;
+  }
+
   get character() {
     const P = this.p;
     const pairs = [
@@ -89,12 +126,13 @@ export class Fish {
     return pairs[0][1];
   }
 
-  init() {
+  init(at) {
     const eco = this.eco, sp = this.sp, R = this.R;
-    // favourite place depends on character + species
+    // favourite place: remembered from earlier visits, or chosen by character + species
     const spots = eco.spots;
-    let fav;
-    if (sp.homeKind === 'anemone') fav = eco.spotByName('актиния');
+    let fav = this.rec.fav && eco.spotByName(this.rec.fav);
+    if (fav) { /* keeps its old favourite */ }
+    else if (sp.homeKind === 'anemone') fav = eco.spotByName('актиния');
     else if (this.p.territoriality > 0.6) fav = pick(spots.filter((s) => ['castle', 'cave', 'hide', 'ship', 'arch'].includes(s.kind)));
     else if (sp.bottom) fav = pick(spots.filter((s) => s.pos.y < 1.6));
     else if (this.p.shyness > 0.55) fav = pick(spots.filter((s) => s.kind === 'hide' || s.kind === 'plants' || s.kind === 'cave'));
@@ -108,10 +146,12 @@ export class Fish {
       if (d < bd) { bd = d; best = s; }
     }
     this.hideSpot = best;
-    this.pos.set(rand(-BOUNDS.x, BOUNDS.x) * 0.9, rand(sp.zone[0] + 0.5, sp.zone[1]), rand(-1.5, 1.5));
+    if (at) this.pos.copy(at);
+    else if (this.stage === 'fry') this.pos.copy(this.randomPointNear(this.nurseryPos(), 0.6));
+    else this.pos.set(rand(-BOUNDS.x, BOUNDS.x) * 0.9, rand(sp.zone[0] + 0.5, sp.zone[1]), rand(-1.5, 1.5));
     if (sp.bottom) this.pos.y = eco.heightAt(this.pos.x, this.pos.z) + 0.12;
     this.root.position.copy(this.pos);
-    this.setState(sp.school > 0.6 ? 'SCHOOL' : 'IDLE');
+    this.setState(this.stage === 'fry' ? 'NURSERY' : sp.school > 0.6 ? 'SCHOOL' : 'IDLE');
   }
 
   dist(o) { return this.pos.distanceTo(o.pos); }
@@ -146,7 +186,7 @@ export class Fish {
     // 1. Threats: much bigger fish rushing close
     if (!busy && s !== 'EAT' && s !== 'DEFEND') {
       for (const o of eco.fish) {
-        if (o === this || o.hidden) continue;
+        if (o === this || o.hidden || (o.sp === sp && this.stage === 'fry')) continue;
         if (o.size > this.size * 2.0 || o.state === 'DEFEND' && o.ctx.target === this) {
           const d = this.dist(o);
           const r = o.size * 1.2 + 0.25;
@@ -249,6 +289,15 @@ export class Fish {
     const eco = this.eco, sp = this.sp, P = this.p, mem = this.mem;
     const night = eco.night;
     const sleepy = sp.nocturnal ? 0.2 * (1 - night) : night;
+    if (this.stage === 'fry') {
+      // youngsters stay close to where they hatched, hide a lot and play with each other
+      const w = { NURSERY: 3, HIDE: 0.4 + P.shyness * 0.8 + sleepy, PLAY: P.playfulness * 0.5 * (1 - sleepy), EXPLORE: this.independence * 0.6 * (1 - sleepy) };
+      let sum = 0;
+      for (const k in w) sum += w[k];
+      let r = Math.random() * sum;
+      for (const k in w) { r -= w[k]; if (r <= 0) return this.enter(k); }
+      return this.enter('NURSERY');
+    }
     const school = sp.school > 0.6;
     const farFromFav = this.pos.distanceTo(this.fav.pos) > 2.5;
     const friend = this.bestFriend();
@@ -269,7 +318,10 @@ export class Fish {
       CIRCLE: 0.12 * P.playfulness,
       AIR: sp.id === 'cory' ? 0.08 : 0,
       CRUISE: sp.bottom ? 2.5 : 0,
+      COURT: this.mate && !this.mate.hidden && this.mate.stage !== 'fry' ? 1.4 * (1 - sleepy * 0.7) : 0,
+      GUARD: this.guardUntil > eco.world.now() ? 3.5 : 0,
     };
+    if (this.stage === 'elder') { w.REST *= 2.5; w.PLAY *= 0.3; w.EXPLORE *= 0.5; }
     if (sp.bottom) { w.EXPLORE *= 0.3; w.BUBBLES = 0; w.CIRCLE = 0; }
     let sum = 0;
     for (const k in w) sum += w[k];
@@ -342,6 +394,19 @@ export class Fish {
         break;
       case 'CRUISE':
         this.setState('CRUISE', { point: this.randomBottomPoint() }, rand(5, 12));
+        break;
+      case 'NURSERY':
+        this.setState('NURSERY', {}, rand(8, 16));
+        break;
+      case 'COURT': {
+        const m = this.mate;
+        this.setState('COURT', { other: m, side: Math.random() < 0.5 ? -1 : 1 }, rand(10, 20));
+        if (Math.random() < 0.2) eco.story('court', pick([`${this.name} и ${m.name} не расстаются`, `${this.name} кружит рядом со своей парой — ${m.name}`]), this.pos, { cooldown: 60, focus: this });
+        break;
+      }
+      case 'GUARD':
+        this.setState('GUARD', { ang: rand(0, 6.28) }, rand(10, 18));
+        if (Math.random() < 0.2) eco.story('guard', `${this.name} присматривает за мальками`, this.pos, { cooldown: 90, focus: this });
         break;
       default:
         this.setState(next, {}, undefined);
@@ -602,6 +667,46 @@ export class Fish {
         if (c.face) this.face = c.face;
         break;
       }
+      case 'NURSERY': {
+        // little loops around the nursery, wider as the youngster gains confidence
+        const home = this.nurseryPos();
+        if (!c.point || this.pos.distanceTo(c.point) < 0.15) c.point = this.randomPointNear(home, 0.3 + this.independence * 1.6);
+        g.copy(c.point); spd = 0.5;
+        break;
+      }
+      case 'COURT': {
+        // side by side with the partner, now and then a little display
+        const o = c.other;
+        if (!o || o.hidden) { this.setState('IDLE'); break; }
+        _a.crossVectors(o.heading, UP).normalize().multiplyScalar(c.side * (o.size + this.size) * 0.45);
+        g.copy(o.pos).add(_a).addScaledVector(o.heading, 0.05);
+        spd = clamp(o.vel.length() / sp.swim.cruise + this.pos.distanceTo(g) * 0.8, 0.2, 1.3);
+        if (Math.sin(eco.time * 0.7 + this.idx) > 0.97) this.flare = Math.min(1, this.flare + dt * 2);
+        break;
+      }
+      case 'NEST': {
+        // the pair circles closely over the chosen spot before the brood arrives
+        const s = c.spot;
+        c.ang += c.dir * dt * 0.9;
+        g.copy(s.pos).add(_a.set(Math.cos(c.ang) * 0.3, 0.15 + Math.sin(c.ang * 2) * 0.05, Math.sin(c.ang) * 0.2));
+        if (sp.bottom) g.y = eco.heightAt(g.x, g.z) + 0.1;
+        spd = 0.4;
+        if (Math.random() < dt * 0.5) this.face = s.pos;
+        break;
+      }
+      case 'GUARD': {
+        // parents patrol around their youngsters and shoo away strangers
+        const home = this.nurseryPos();
+        c.ang += dt * 0.6;
+        g.set(home.x + Math.cos(c.ang) * 0.6, home.y + 0.1 + Math.sin(c.ang * 0.7) * 0.15, home.z + Math.sin(c.ang) * 0.35);
+        spd = 0.5;
+        const intruder = this.nearestOther((o) => !o.hidden && o.sp !== sp && o.pos.distanceTo(home) < 0.9 && o.size < this.size * 1.6, 1.4);
+        if (intruder && Math.random() < dt * 0.8) {
+          this.setState('DEFEND', { target: intruder }, rand(1.5, 3));
+          eco.story('guard-chase', `${this.name} отгоняет ${intruder.name} от своих мальков`, this.pos, { cooldown: 40, focus: this });
+        }
+        break;
+      }
       default:
         g.copy(this.pos).add(this.heading); spd = 0.4;
     }
@@ -622,7 +727,7 @@ export class Fish {
       if (this.burstT < 0) { this.burst = rand(0.15, 0.3); this.burstT = rand(0.5, 2.2) / (0.4 + S.burst); }
     }
     if (this.burst > 0) { this.burst -= dt; mul *= 1 + 0.8 * S.burst; }
-    const desiredSpeed = S.cruise * mul;
+    const desiredSpeed = S.cruise * mul * this.speedK;
     // seek
     _a.copy(this.goal).sub(this.pos);
     const dist = _a.length();
@@ -704,7 +809,7 @@ export class Fish {
     //    off its axis or keep moving without beating.
     // The tail animation is driven by the same intensity (this.tail), so motion and fins agree.
     const flee = this.state === 'FLEE' ? 2 : 1;
-    const maxV = S.max * (this.state === 'FLEE' || this.state === 'DEFEND' || this.state === 'EAT' ? 1 : 0.75);
+    const maxV = S.max * this.speedK * (this.state === 'FLEE' || this.state === 'DEFEND' || this.state === 'EAT' ? 1 : 0.75);
     const h = this.heading;
     let fwd = this.vel.dot(h);
     const speed = Math.max(0, fwd);
@@ -792,7 +897,7 @@ export class Fish {
     const act = Math.max(this.tail, spin);
     // Bainbridge: tail-beat frequency f ≈ 1.33·(1 + U/L) Hz, it never drops much below ~1.3 Hz;
     // at low speed the stroke gets smaller instead
-    let freq = Math.PI * 2 * 1.33 * (1 + act * S.cruise / sp.len);
+    let freq = Math.PI * 2 * 1.33 * (1 + act * S.cruise / this.size);   // small fish beat faster
     let amp = S.amp * sp.len * (0.15 + 0.85 * Math.min(act / 0.6, 1));
     if (S.wiggle) amp *= 1.2;
     if (this.flare > 0) { freq *= 1.6; amp *= 1 + this.flare * 0.8; this.flare = Math.max(0, this.flare - dt * 0.7); }
@@ -810,6 +915,12 @@ export class Fish {
     const scull = this.pectS, brake = this.pectB;
     this.finPhase += dt * (4 + scull * 6);
     this.pect.value = 0.35 + hover * 0.25 + brake * 0.6 + Math.sin(this.finPhase) * (0.12 + scull * 0.45) + this.flare * 0.5;
+    // growing up: the body follows the age-dependent size smoothly
+    if (Math.abs(this.targetScale - this.scale) > 1e-4) {
+      this.scale += (this.targetScale - this.scale) * Math.min(1, dt * 0.5);
+      this.size = sp.len * this.scale;
+      this.root.scale.setScalar(this.scale);
+    }
     // gulp
     if (this.gulp > 0) {
       this.gulp = Math.max(0, this.gulp - dt * 3);
@@ -859,6 +970,10 @@ export class Fish {
       case 'CAROUSEL': return 'Карусель!';
       case 'AIR': return 'Плывёт за глотком воздуха';
       case 'SCRIPT': return c.label || 'Занят делом';
+      case 'NURSERY': return this.independence > 0.5 ? 'Осваивает окрестности' : 'Держится рядом с братьями и сёстрами';
+      case 'COURT': return `Плавает со своей парой — ${nm(c.other)}`;
+      case 'NEST': return 'Готовится к появлению мальков';
+      case 'GUARD': return 'Присматривает за мальками';
       default: return 'Плавает';
     }
   }

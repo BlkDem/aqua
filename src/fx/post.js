@@ -2,8 +2,8 @@ import * as THREE from 'three';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
-import { BokehPass } from 'three/addons/postprocessing/BokehPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { Pass, FullScreenQuad } from 'three/addons/postprocessing/Pass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 
 // Removes NaN/Inf pixels before bloom so a single bad sample can't flare into a blob
@@ -17,6 +17,59 @@ const SanitizeShader = {
       gl_FragColor = vec4(bad ? vec3(0.0) : min(c.rgb, vec3(40.0)), 1.0);
     }`,
 };
+
+// Depth of field from the depth the main pass already wrote (no second scene render): each
+// out-of-focus pixel gathers a golden-angle disc whose radius grows with the distance from focus.
+const DofShader = {
+  uniforms: {
+    tColor: { value: null }, tDepth: { value: null }, focus: { value: 12 }, aperture: { value: 0.001 },
+    maxblur: { value: 0.006 }, aspect: { value: 1 }, near: { value: 0.1 }, far: { value: 100 },
+  },
+  vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+  fragmentShader: `
+    #include <packing>
+    uniform sampler2D tColor, tDepth; uniform float focus, aperture, maxblur, aspect, near, far;
+    varying vec2 vUv;
+    float coc(vec2 uv) {
+      float z = -perspectiveDepthToViewZ(texture2D(tDepth, uv).x, near, far);
+      return min(abs(z - focus) * aperture, maxblur);
+    }
+    void main() {
+      vec4 c0 = texture2D(tColor, vUv);
+      float r0 = coc(vUv);
+      if (r0 < 0.0004) { gl_FragColor = c0; return; }
+      vec3 acc = c0.rgb; float wsum = 1.0;
+      for (int i = 0; i < 20; i++) {
+        float fi = float(i) + 0.5;
+        float rr = sqrt(fi / 20.0) * r0;
+        vec2 uv = vUv + vec2(cos(fi * 2.39996) / aspect, sin(fi * 2.39996)) * rr;
+        // a sample only spreads this far if it is blurred that much itself (keeps sharp edges)
+        float w = clamp(coc(uv) / max(rr, 1e-5), 0.0, 1.0);
+        acc += texture2D(tColor, uv).rgb * w;
+        wsum += w;
+      }
+      gl_FragColor = vec4(acc / wsum, c0.a);
+    }`,
+};
+
+class DofPass extends Pass {
+  constructor(camera) {
+    super();
+    this.camera = camera;
+    this.material = new THREE.ShaderMaterial({ ...DofShader, uniforms: THREE.UniformsUtils.clone(DofShader.uniforms) });
+    this.uniforms = this.material.uniforms;
+    this.fsQuad = new FullScreenQuad(this.material);
+  }
+  render(renderer, writeBuffer, readBuffer) {
+    const u = this.uniforms;
+    u.tColor.value = readBuffer.texture;
+    u.tDepth.value = readBuffer.depthTexture;
+    u.near.value = this.camera.near;
+    u.far.value = this.camera.far;
+    renderer.setRenderTarget(this.renderToScreen ? null : writeBuffer);
+    this.fsQuad.render(renderer);
+  }
+}
 
 const GradeShader = {
   uniforms: {
@@ -59,10 +112,11 @@ const GradeShader = {
 
 export function buildPost(renderer, scene, camera) {
   const size = renderer.getSize(new THREE.Vector2());
-  const rt = new THREE.WebGLRenderTarget(size.x, size.y, { type: THREE.HalfFloatType, samples: 4 });
+  // the scene's depth stays available to the depth of field pass
+  const rt = new THREE.WebGLRenderTarget(size.x, size.y, { type: THREE.HalfFloatType, samples: 4, depthTexture: new THREE.DepthTexture(size.x, size.y) });
   const composer = new EffectComposer(renderer, rt);
   composer.addPass(new RenderPass(scene, camera));
-  const bokeh = new BokehPass(scene, camera, { focus: 12, aperture: 0.001, maxblur: 0.006 });
+  const bokeh = new DofPass(camera);
   bokeh.enabled = false;
   composer.addPass(bokeh);
   const bloom = new UnrealBloomPass(new THREE.Vector2(size.x, size.y), 0.38, 0.55, 0.92);

@@ -1,23 +1,22 @@
 import * as THREE from 'three';
-import { SPECIES, NAMES } from './species.js';
+import { SPECIES } from './species.js';
 import { Fish, BOUNDS } from './fish.js';
+import { FishBatch } from './fishModel.js';
 import { buildCritters } from './critters.js';
+import { lifeTick, brood, schoolSizes, RARE } from './lifecycle.js';
+import { fryWord, count } from './words.js';
+import { DAY } from './world.js';
 import { Food } from '../fx/particles.js';
 import { sandHeight, TANK } from '../world/tank.js';
-import { G, rand, pick, clamp, hashStr } from '../fx/shaderPatch.js';
+import { G, rand, pick, clamp } from '../fx/shaderPatch.js';
 
-const STORE = 'living-aquarium.v1';
-
-function loadStore() {
-  try {
-    const s = JSON.parse(localStorage.getItem(STORE) || 'null');
-    if (s && s.salt) return s;
-  } catch (e) { /* ignore */ }
-  return { salt: Math.random().toString(36).slice(2), names: {}, visits: 0, secrets: [] };
-}
+// automatic feeding times (hour of the day) for 2, 3 or 4 meals a day
+export const FEED_TIMES = { 2: [9, 19], 3: [9, 14, 20], 4: [8, 12, 16, 20] };
+const SCHOOL_MARKS = [10, 15, 20, 25];
 
 export class Ecosystem {
-  constructor(scene, decor, plants, bubbles, tank) {
+  constructor(scene, decor, plants, bubbles, tank, world) {
+    this.world = world;
     this.scene = scene;
     this.decor = decor;
     this.plants = plants;
@@ -42,31 +41,30 @@ export class Ecosystem {
     this.cool = {};
     this.lastStoryT = -99;
     this.timers = [];
-    this.store = loadStore();
-    this.store.visits = (this.store.visits || 0) + 1;
-    this.save();
+    this.byUid = new Map();
+    this.fishListeners = [];
+    this.batches = new Map();
+    world.pending = {};
 
     this.buildHeightGrid(decor.walkables);
 
-    // ---------- fish ----------
-    const usedNames = new Set(Object.values(this.store.names));
-    const freeNames = NAMES.filter((n) => !usedNames.has(n)).sort(() => Math.random() - 0.5);
-    for (const sp of Object.values(SPECIES)) {
-      for (let i = 0; i < sp.count; i++) {
-        const key = `${sp.id}-${i}`;
-        let name = this.store.names[key];
-        if (!name) { name = freeNames.pop() || `${sp.title} ${i + 1}`; this.store.names[key] = name; }
-        const variant = sp.variants ? sp.variants[i % sp.variants.length] : null;
-        const f = new Fish(this, sp, i, variant, { key, name, seed: hashStr(this.store.salt + key) });
-        this.fish.push(f);
-        this.byId.set(f.id, f);
-        scene.add(f.root);
+    // ---------- fish: everyone who lives in the saved aquarium ----------
+    for (const rec of world.fish) this.spawnFish(rec);
+    for (const f of this.fish) {   // friendships are saved by uid
+      for (const [uid, v] of Object.entries(f.rec.friends || {})) {
+        const o = this.byUid.get(Number(uid));
+        if (o) f.mem.friends.set(o.id, v);
       }
     }
-    this.save();
     for (const f of this.fish) f.init();
     // rare species start hidden
     for (const f of this.fish) if (f.sp.rare) { f.hidden = true; f.root.visible = false; }
+    // milestones already reached by the founders are not news
+    const schools = schoolSizes(world, world.now());
+    for (const [id, n] of Object.entries(schools)) for (const m of SCHOOL_MARKS) if (n >= m) world.mark(`school-${id}-${m}`);
+    this.lifeT = 0;
+    this.saveT = 0;
+    this.lastLife = world.now();
 
     // schools
     this.schools = {};
@@ -100,10 +98,58 @@ export class Ecosystem {
     this.nextDiver = rand(6, 14);
   }
 
-  save() { try { localStorage.setItem(STORE, JSON.stringify(this.store)); } catch (e) { /* ignore */ } }
+  get store() { return this.world.state; }
+  /** Save the world, with what each fish has come to like and whom it is friends with. */
+  save() {
+    for (const f of this.fish) {
+      f.rec.fav = f.fav?.name || null;
+      const friends = [...f.mem.friends.entries()].filter(([, v]) => v > 0.1).sort((a, b) => b[1] - a[1]).slice(0, 5);
+      f.rec.friends = Object.fromEntries(friends.map(([id, v]) => [this.byId.get(id)?.uid, Math.round(v * 100) / 100]).filter(([u]) => u));
+    }
+    this.world.save();
+  }
   rename(f, name) {
     f.name = name;
-    if (f.key) { this.store.names[f.key] = name; this.save(); }
+    f.rec.name = name;
+    this.save();
+  }
+  onFish(cb) { this.fishListeners.push(cb); }
+
+  /** The shared instanced meshes for every fish drawn from one model. */
+  fishBatch(sp, key, asset) {
+    if (!this.batches.has(key)) this.batches.set(key, new FishBatch(sp, asset, this.scene));
+    return this.batches.get(key);
+  }
+
+  /** Bring a saved fish into the scene (optionally at a point, e.g. a nest). */
+  spawnFish(rec, at) {
+    const idx = this.fish.filter((o) => o.sp.id === rec.sp).length;
+    const f = new Fish(this, rec, idx);
+    this.fish.push(f);
+    this.byId.set(f.id, f);
+    this.byUid.set(rec.uid, f);
+    this.scene.add(f.root);
+    if (at) f.init(at);
+    for (const cb of this.fishListeners) cb(f);
+    return f;
+  }
+
+  /** A notable moment: shown now and kept in the aquarium's history. */
+  chronicle(kind, text, pos, opts = {}) {
+    this.world.log(kind, text);
+    this.story(kind, text, pos, { cooldown: 0, ...opts, rare: true });
+  }
+
+  /** The user adds a young fish of a species (if there is room for it). */
+  addFish(spId) {
+    const sp = SPECIES[spId];
+    if (this.world.count(spId) >= (sp.life.breed?.cap || sp.count)) return null;
+    const rec = this.world.newcomer(spId);
+    const f = this.spawnFish(rec, new THREE.Vector3(rand(-3, 3), 4.9, rand(-0.5, 1)));
+    f.setState('EXPLORE', { spot: pick(this.spots), point: f.randomZonePoint() }, 10);
+    this.chronicle('newcomer', `В аквариуме новый житель: ${sp.title} ${f.name}`, f.pos, { focus: f });
+    this.save();
+    return f;
   }
   spotByName(n) { return this.spots.find((s) => s.name === n); }
   bubbleSources() { return [this.aerator, this.diverSrc, this.filterSrc]; }
@@ -181,11 +227,13 @@ export class Ecosystem {
   after(sec, fn) { this.timers.push({ t: this.time + sec, fn }); }
 
   // ----------------------------------------------------------- user actions
-  feed(x) {
+  feed(x, auto = false) {
     const px = x ?? rand(-4, 4);
     const pz = rand(-0.8, 1.2);
-    this.foodSys.drop(px, pz, 30);
-    this.after(rand(0.6, 1.4), () => this.foodSys.drop(px + rand(-1.2, 1.2), pz + rand(-0.3, 0.3), 18));
+    const type = this.world.state.feeder.food;
+    this.foodSys.drop(px, pz, 30, type);
+    this.after(rand(0.6, 1.4), () => this.foodSys.drop(px + rand(-1.2, 1.2), pz + rand(-0.3, 0.3), 18, type));
+    if (type === 'worms') for (const f of this.fish) f.hunger = Math.min(1, f.hunger + 0.3);   // a treat!
     (this.tank.ripples ||= []).push({ x: px, z: pz, t: this.time });
     this.lastFeed = { x: px, z: pz, t: this.time };
     for (const f of this.fish) {
@@ -193,7 +241,30 @@ export class Ecosystem {
       // fish that remember feeding place react faster
       if (f.mem.foodSpot && f.mem.foodSpot.distanceTo(new THREE.Vector3(px, f.mem.foodSpot.y, pz)) < 2 && Math.random() < 0.6) f.thinkT = 0;
     }
-    this.story('feed', pick(['Время обеда! Корм опускается в воду', 'Кормление! Все к поверхности', 'Сверху посыпался корм…']), new THREE.Vector3(px, 5, pz), { rare: true, cooldown: 2 });
+    const text = auto
+      ? pick(['Автокормушка: время обеда', 'Автокормушка насыпала корм', 'По расписанию — обед!'])
+      : pick(['Время обеда! Корм опускается в воду', 'Кормление! Все к поверхности', 'Сверху посыпался корм…']);
+    this.story('feed', text, new THREE.Vector3(px, 5, pz), { rare: true, cooldown: 2 });
+  }
+
+  /** Feed by the schedule; a meal missed while the page was closed is served shortly after opening. */
+  feederCheck(t) {
+    const F = this.world.state.feeder;
+    if (!F.on) return;
+    const day = new Date(t);
+    let slot = 0;
+    for (const back of [0, 1]) {
+      for (const hr of FEED_TIMES[F.perDay] || FEED_TIMES[3]) {
+        const d = new Date(day);
+        d.setDate(d.getDate() - back);
+        d.setHours(hr, 0, 0, 0);
+        if (d.getTime() <= t) slot = Math.max(slot, d.getTime());
+      }
+    }
+    if (slot > F.last) {
+      F.last = t;
+      this.feed(undefined, true);
+    }
   }
 
   eatFood(f, eater) {
@@ -504,13 +575,96 @@ export class Ecosystem {
     }
   }
 
+  /** Every few seconds: growth, pairs, broods, milestones, the feeder, saving. */
+  lifeUpdate() {
+    const w = this.world, t = w.now();
+    for (const f of this.fish) {
+      const prev = f.stage;
+      f.updateLife(t);
+      if (prev !== f.stage) this.onStage(f, prev);
+    }
+    const out = [];
+    lifeTick(w, t, (t - this.lastLife) / DAY, true, out);
+    this.lastLife = t;
+    for (const e of out) {
+      const f = this.byUid.get(e.f.uid), m = this.byUid.get(e.m.uid);
+      if (e.type === 'pair') this.story('pair', `${e.f.name} и ${e.m.name} стали парой`, f?.pos, { rare: true, cooldown: 0, focus: f });
+      if (e.type === 'due') this.startNesting(e, f, m);
+    }
+    // schools growing, friendships forming, first visits to the cave
+    for (const [id, n] of Object.entries(schoolSizes(w, t))) {
+      for (const mk of SCHOOL_MARKS) {
+        if (n >= mk && w.mark(`school-${id}-${mk}`)) this.chronicle('school', `Стая «${SPECIES[id].title}» выросла до ${count(n, ['рыбки', 'рыбок', 'рыбок'])}`, this.schools[id]?.target);
+      }
+    }
+    for (const f of this.fish) {
+      if (f.hidden) continue;
+      // only a lasting friendship makes it into the history, and not too often
+      const b = f.bestFriend();
+      if (b && f.mem.friends.get(b.id) > 0.8 && this.time - (this.friendLogT ?? -1e9) > 600 && w.mark(`friends-${Math.min(f.uid, b.uid)}-${Math.max(f.uid, b.uid)}`)) {
+        this.friendLogT = this.time;
+        this.chronicle('friends', `${f.name} и ${b.name} подружились — теперь их часто видят вместе`, f.pos, { focus: f });
+      }
+      if (f.mem.discoveries.has('пещера') && f.stage !== 'fry' && w.mark(`cave-${f.uid}`) && Math.random() < 0.5) {
+        this.chronicle('cave', `${f.name} впервые заплыл${f.sex === 'f' ? 'а' : ''} в пещеру`, this.spotByName('пещера')?.pos, { focus: f });
+      }
+    }
+    if (this.plants.tick(t)) this.story('plant', 'Одно из растений пустило новый побег', null, { rare: true, cooldown: 60 });
+    this.feederCheck(t);
+  }
+
+  onStage(f, prev) {
+    const w = this.world, r = f.rec;
+    const family = r.parentNames || [];
+    const brood = `${r.sp}-${Math.round(r.born / 60000)}`;
+    if (prev === 'fry' && f.stage === 'juvenile' && w.mark(`grew-${brood}`)) {
+      this.chronicle('grew', family.length === 2 ? `Подросли мальки пары ${family[0]} и ${family[1]} — теперь они осваивают аквариум` : `${f.name} подрос${f.sex === 'f' ? 'ла' : ''}`, f.pos, { focus: f });
+    } else if (prev === 'juvenile' && f.stage === 'adult' && w.mark(`adult-${brood}`)) {
+      this.chronicle('adult', family.length === 2 ? `Повзрослели дети пары ${family[0]} и ${family[1]}` : `${f.name} стал${f.sex === 'f' ? 'а' : ''} взрослой рыбкой`, f.pos, { focus: f });
+    } else if (prev === 'adult' && f.stage === 'elder') {
+      this.chronicle('elder', `${f.name} теперь старожил аквариума`, f.pos, { focus: f });
+    }
+  }
+
+  /** A brood is due: the pair picks a sheltered spot, circles over it, then the fry appear. */
+  startNesting(e, f, m) {
+    const w = this.world, sp = SPECIES[e.f.sp];
+    w.pending[sp.id] = (w.pending[sp.id] || 0) + e.n;
+    const near = (f || m)?.fav?.pos || new THREE.Vector3();
+    const cands = this.spots.filter((s) => s.kind === 'plants' || s.kind === 'hide' || (sp.homeKind === 'anemone' && s.name === 'актиния'));
+    const spot = cands.sort((a, b) => a.pos.distanceTo(near) - b.pos.distanceTo(near) + rand(-1, 1))[0];
+    const nest = sp.homeKind === 'anemone' ? this.spotByName('актиния') : spot;
+    for (const p of [f, m]) if (p && !p.hidden) p.setState('NEST', { spot: nest, ang: rand(0, 6.28), dir: p === f ? 1 : -1 }, 40);
+    if (f) this.story('nest', sp.life.breed.live ? `${f.name} ждёт малышей у ${nest.name}` : `${e.f.name} и ${e.m.name} выбрали место для икры: ${nest.name}`, nest.pos, { rare: true, cooldown: 0, focus: f });
+    this.after(rand(28, 40), () => {
+      w.pending[sp.id] -= e.n;
+      const kids = brood(w, e.f, e.m, w.now(), e.n, nest.name);
+      let first = null;
+      for (const k of kids) {
+        const fk = this.spawnFish(k, nest.pos.clone().add(new THREE.Vector3(rand(-0.25, 0.25), rand(0, 0.2), rand(-0.15, 0.15))));
+        first ||= fk;
+      }
+      this.sandSrc.pos.copy(nest.pos); this.sandSrc.burst = 0.3;
+      const rare = kids.find((k) => k.gene.rare);
+      this.story('birth', `${e.f.name} и ${e.m.name} стали родителями: ${fryWord(kids.length)}!`, nest.pos, { rare: true, cooldown: 0, focus: first });
+      if (rare) this.after(6, () => this.story('rare-color', `Один из малышей — ${rare.name} — с необычным окрасом: ${RARE[rare.gene.rare].title}`, nest.pos, { rare: true, cooldown: 0, focus: this.byUid.get(rare.uid) }));
+      if (sp.life.breed.care) for (const p of [f, m]) if (p) p.guardUntil = w.now() + DAY * 0.5;
+      this.save();
+    });
+  }
+
   update(dt) {
     this.time += dt;
+    this.lifeT -= dt;
+    if (this.lifeT <= 0) { this.lifeT = 4; this.lifeUpdate(); }
+    this.saveT -= dt;
+    if (this.saveT <= 0) { this.saveT = 20; this.save(); }
     G.uNight.value = this.night;
     // timers
     for (let i = this.timers.length - 1; i >= 0; i--) if (this.time >= this.timers[i].t) { const t = this.timers[i]; this.timers.splice(i, 1); t.fn(); }
     this.updateSchools(dt);
     for (const f of this.fish) f.update(dt);
+    for (const b of this.batches.values()) b.update();
     for (const c of this.critters) c.update(dt);
     this.foodSys.update(dt);
 

@@ -7,6 +7,52 @@ const UP = new THREE.Vector3(0, 1, 0);
 const _a = new THREE.Vector3(), _b = new THREE.Vector3(), _m = new THREE.Matrix4(), _q = new THREE.Quaternion();
 const GLASS = { front: TANK.D / 2 - 0.08, back: -TANK.D / 2 + 0.08, side: TANK.W / 2 - 0.08 };
 
+/**
+ * Draw a critter made of many small animated parts in a single call. The part meshes stay in
+ * the scene graph, invisible, and act as bones (so the animation code below keeps moving them
+ * as before); one rigidly skinned mesh with their geometry in one buffer renders them all.
+ * Part colours (material colour x vertex colours) are baked into vertex colours.
+ */
+function skinParts(root, mat) {
+  root.updateMatrixWorld(true);
+  const parts = [];
+  root.traverse((o) => { if (o.isMesh) parts.push(o); });
+  const extra = new Set();
+  for (const m of parts) for (const k of Object.keys(m.geometry.attributes)) if (k.startsWith('a')) extra.add(k);
+  const geos = parts.map((m, i) => {
+    const g = m.geometry.index ? m.geometry.toNonIndexed() : m.geometry.clone();
+    for (const k of Object.keys(g.attributes)) if (!['position', 'normal', 'color', ...extra].includes(k)) g.deleteAttribute(k);
+    const n = g.attributes.position.count;
+    const vc = g.attributes.color, c = m.material.color || new THREE.Color(1, 1, 1);
+    const col = new Float32Array(n * 3), si = new Uint16Array(n * 4), sw = new Float32Array(n * 4);
+    for (let k = 0; k < n; k++) {
+      col[k * 3] = (vc ? vc.getX(k) : 1) * c.r;
+      col[k * 3 + 1] = (vc ? vc.getY(k) : 1) * c.g;
+      col[k * 3 + 2] = (vc ? vc.getZ(k) : 1) * c.b;
+      si[k * 4] = i;
+      sw[k * 4] = 1;
+    }
+    g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    g.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(si, 4));
+    g.setAttribute('skinWeight', new THREE.BufferAttribute(sw, 4));
+    for (const k of extra) if (!g.attributes[k]) g.setAttribute(k, new THREE.BufferAttribute(new Float32Array(n * 3), 3));
+    m.visible = false;   // still there for animation and picking, no longer drawn
+    return g;
+  });
+  // bones are the part meshes themselves; bind matrices are identity, so the skinned mesh lives
+  // in world space and its vertices are moved by the parts' world matrices
+  const skin = new THREE.SkinnedMesh(mergeGeometries(geos), mat);
+  skin.bind(new THREE.Skeleton(parts, parts.map(() => new THREE.Matrix4())), new THREE.Matrix4());
+  skin.frustumCulled = false;
+  skin.castShadow = true;
+  return skin;
+}
+
+/** One physical material for a whole critter (colours come from the vertices). */
+function critterMat(opts, caustics) {
+  return patchMaterial(new THREE.MeshPhysicalMaterial({ vertexColors: true, ...opts }), { caustics });
+}
+
 function orient(obj, up, fwd, k) {
   // build basis: y = up, z = forward projected on plane
   _a.copy(fwd).addScaledVector(up, -fwd.dot(up));
@@ -69,15 +115,19 @@ function shrimpModel(color) {
   }
   for (const s of [-1, 1]) add(legGeo(), M(s * 0.012, 0.03, 0.11, -0.8, 0, s * 0.2), [1, 1, 1], [s * 1.7, 1, 1], 0.05);
   const anim = { uWalk: { value: 0 }, uWalkAmp: { value: 0 }, uClaw: { value: 0 }, uClawAmp: { value: 0 } };
-  const bodyMat = new THREE.MeshPhysicalMaterial({ color, vertexColors: true, roughness: 0.25, clearcoat: 1, sheen: 0.5, sheenColor: new THREE.Color('#fff') });
-  bodyMat.onBeforeCompile = (sh) => {
+  const bodyMat = new THREE.MeshPhysicalMaterial({ color, vertexColors: true });
+  // the whole shrimp is drawn with one material; legs and claws move in its vertex shader
+  const skinMat = critterMat({ roughness: 0.25, clearcoat: 1, sheen: 0.5, sheenColor: new THREE.Color('#fff') }, 0.6);
+  const patched = skinMat.onBeforeCompile, key = skinMat.customProgramCacheKey();
+  skinMat.onBeforeCompile = (sh, r) => {
+    patched(sh, r);
     Object.assign(sh.uniforms, anim);
     sh.vertexShader = 'attribute vec3 aLeg; uniform float uWalk, uWalkAmp, uClaw, uClawAmp;\n' + sh.vertexShader.replace('#include <begin_vertex>', `#include <begin_vertex>
       float sw = aLeg.z > 0.5 ? sin(uClaw + aLeg.x) * uClawAmp : sin(uWalk + aLeg.x) * uWalkAmp;
       transformed.z += sw * aLeg.y * 0.025;
       transformed.y += max(0.0, sw) * aLeg.y * 0.006 * (1.0 - aLeg.z);`);
   };
-  bodyMat.customProgramCacheKey = () => 'shrimp-body';
+  skinMat.customProgramCacheKey = () => `${key}-shrimp`;
   const front = new THREE.Mesh(mergeGeometries(parts), bodyMat);
   front.castShadow = true;
   g.add(front);
@@ -89,7 +139,7 @@ function shrimpModel(color) {
   const tail = new THREE.Mesh(mergeGeometries(fan), mat);
   tail.position.set(0, 0, -0.03);
   segs[n - 1].add(tail);
-  return { group: g, anim, segs, tail };
+  return { group: g, anim, segs, tail, skinMat };
 }
 
 class Shrimp {
@@ -97,6 +147,7 @@ class Shrimp {
     this.eco = eco; this.kind = 'shrimp'; this.name = name; this.id = id;
     this.title = 'Креветка';
     this.model = shrimpModel(color);
+    this.skinMat = this.model.skinMat;
     this.root = new THREE.Group();
     this.root.add(this.model.group);
     this.root.scale.setScalar(rand(0.85, 1.25));
@@ -276,6 +327,7 @@ class Snail {
       this.tents.push(t);
     }
     this.root.scale.setScalar(type === 'mystery' ? 1.6 : 1.1);
+    this.skinMat = critterMat({ roughness: 0.35, clearcoat: 0.7, clearcoatRoughness: 0.15, sheen: 0.4, sheenColor: new THREE.Color('#fff0d0') }, 0.7);
     this.root.traverse((o) => { if (o.isMesh) o.userData.critter = this; });
     this.inner = inner;
     this.mode = 'ground';
@@ -411,6 +463,7 @@ class Crab {
       const e = new THREE.Mesh(new THREE.SphereGeometry(0.012, 8, 6), dark); e.position.set(s * 0.025, 0.15, 0.06); this.root.add(e);
     }
     this.root.traverse((o) => { if (o.isMesh) o.userData.critter = this; });
+    this.skinMat = critterMat({ roughness: 0.35, clearcoat: 1 }, 0.6);
     this.pos = new THREE.Vector3(); this.facing = rand(0, 6.28); this.t = 0; this.goal = null; this.wave = 0; this.walk = 0;
   }
   init() { this.pos.copy(this.eco.randomSurfacePoint(true)); }
@@ -458,6 +511,7 @@ export function buildCritters(eco, scene) {
   for (const c of list) {
     c.init(c._glass);
     scene.add(c.root);
+    scene.add(c.skin = skinParts(c.root, c.skinMat));
   }
   return list;
 }

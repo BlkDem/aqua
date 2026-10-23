@@ -34,13 +34,15 @@ vec3 causticRGB(vec2 uv, float t){
  * opts.caustics: strength (0 = off)
  * opts.sway: plant sway strength (0 = off) — uses local vertex height above the root
  * opts.wag: {value: Vector4(phase, amplitude, bend, length)} — fish body undulation
+ *   (opts.instanced: wag and pect come from the per-instance attributes iWag / iPect instead)
  * opts.glow: {value: float} extra fresnel-ish rim glow (night creatures)
  */
 export function patchMaterial(mat, opts = {}) {
   const caustics = opts.caustics ?? 1;
   const sway = opts.sway ?? 0;
   const wag = opts.wag;
-  const key = `aq-${caustics > 0}-${sway > 0}-${!!wag}-${!!opts.glow}-${!!opts.pect}`;
+  const inst = !!opts.instanced;
+  const key = `aq-${caustics > 0}-${sway > 0}-${!!wag}-${!!opts.glow}-${!!opts.pect}-${inst}`;
   mat.onBeforeCompile = (sh) => {
     sh.uniforms.uTime = G.uTime;
     sh.uniforms.uCaustic = G.uCaustic;
@@ -49,15 +51,15 @@ export function patchMaterial(mat, opts = {}) {
     sh.uniforms.uFish = G.uFish;
     sh.uniforms.uCStrength = { value: caustics };
     sh.uniforms.uSway = { value: sway };
-    if (wag) sh.uniforms.uWag = wag;
+    if (wag && !inst) sh.uniforms.uWag = wag;
     if (opts.glow) sh.uniforms.uGlow = opts.glow;
-    if (opts.pect) sh.uniforms.uPect = opts.pect;
+    if (opts.pect && !inst) sh.uniforms.uPect = opts.pect;
 
     let head = `
 uniform float uTime; uniform vec2 uCurrent; uniform vec4 uFish[16]; uniform float uSway;
 varying vec3 vCWorld; varying vec3 vCNorm;
-${wag ? 'uniform vec4 uWag;' : ''}
-${opts.pect ? 'uniform float uPect; attribute vec4 aPect;' : ''}
+${wag ? (inst ? 'attribute vec4 iWag;\n#define uWag iWag' : 'uniform vec4 uWag;') : ''}
+${opts.pect ? (inst ? 'attribute float iPect;\n#define uPect iPect\nattribute vec4 aPect;' : 'uniform float uPect; attribute vec4 aPect;') : ''}
 `;
     sh.vertexShader = head + sh.vertexShader;
 

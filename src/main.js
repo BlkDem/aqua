@@ -12,6 +12,8 @@ import { buildPost } from './fx/post.js';
 import { Director } from './fx/director.js';
 import { AquaAudio } from './fx/audio.js';
 import { Ecosystem } from './life/ecosystem.js';
+import { World } from './life/world.js';
+import { catchUp } from './life/lifecycle.js';
 import { loadFishAssets } from './life/fishAssets.js';
 import { SPECIES } from './life/species.js';
 import { UI } from './ui/ui.js';
@@ -80,6 +82,7 @@ fill.position.set(-14, 4, 2); // from the side: a frontal fill glints on the fro
 scene.add(fill);
 
 // ------------------------------------------------------------------ world
+const world = new World();
 const tank = buildTank(scene);
 await loadDecorAssets([
   ...['castle', 'rocks', 'arch', 'cave', 'ruins', 'driftwood', 'ship', 'chest', 'bottle', 'mushroom', 'lantern', 'diver', 'duck', 'shells', 'corals', 'pebbles', 'rockpile', 'wreckage']
@@ -87,13 +90,17 @@ await loadDecorAssets([
   ...['vallisneria', 'sword', 'crypt', 'anubias', 'limnophila', 'cabomba', 'ludwigia', 'pistia', 'moss'].map((n) => `plants/${n}`),
 ]);
 const decor = buildDecor(scene);
-const plants = buildPlants(scene);
+const plants = buildPlants(scene, world, decor);
 scene.updateMatrixWorld(true);
 const bubbles = new Bubbles(scene);
 const dust = buildDust(scene);
 const rays = buildGodRays(scene);
 await loadFishAssets(Object.values(SPECIES).flatMap((sp) => (sp.texVariants ? sp.variants.map((_, k) => `${sp.id}-${k}`) : [sp.id])));
-const eco = new Ecosystem(scene, decor, plants, bubbles, tank);
+// the world kept living while the page was closed: catch up before anyone appears on screen
+const away = catchUp(world, world.now());
+const sprouted = plants.tick(world.now());
+if (away) away.plants = sprouted;
+const eco = new Ecosystem(scene, decor, plants, bubbles, tank, world);
 finishMoss(plants, eco);
 // bake static scenery into a handful of meshes (draw calls are the main cost)
 const mergedDecor = mergeStatic(decor.group, [decor.chest.group, decor.duck, ...decor.interactive.map((i) => i.mesh)]);
@@ -128,11 +135,13 @@ halo.renderOrder = 9;
 scene.add(halo);
 
 // ------------------------------------------------------------------ quality presets
+// bloom: internal resolution of the bloom chain (half looks the same and costs a quarter);
+// shadowEvery: the shadow map is redrawn every N frames
 const QUALITY = {
   low: { pr: 0.75, msaa: 0, shadowEvery: 3, bloom: 0.35, dust: 0.4 },
   medium: { pr: 1, msaa: 2, shadowEvery: 2, bloom: 0.5, dust: 0.7 },
-  high: { pr: 1, msaa: 4, shadowEvery: 1, bloom: 0.75, dust: 1 },
-  ultra: { pr: 'dpr', msaa: 4, shadowEvery: 1, bloom: 1, dust: 1 },
+  high: { pr: 1, msaa: 4, shadowEvery: 2, bloom: 0.6, dust: 1 },
+  ultra: { pr: 'dpr', msaa: 4, shadowEvery: 2, bloom: 0.5, dust: 1 },
 };
 
 // ------------------------------------------------------------------ app facade
@@ -168,16 +177,31 @@ const app = {
   setQuality(name) {
     const Q = QUALITY[name] || QUALITY.medium;
     this.quality = { name, ...Q };
-    renderer.setPixelRatio(Q.pr === 'dpr' ? Math.min(window.devicePixelRatio, 2) : Q.pr);
-    post.composer.setPixelRatio(renderer.getPixelRatio());
-    post.setSamples(Q.msaa);
+    this.res.base = Q.pr === 'dpr' ? Math.min(window.devicePixelRatio, 2) : Q.pr;
+    this.res.scale = 1;
     post.setBloomScale(Q.bloom);
     dust.pts.geometry.setDrawRange(0, Math.floor(dust.count * Q.dust));
     renderer.shadowMap.needsUpdate = true;
     try { localStorage.setItem('aq.quality', name); } catch (e) { /* ignore */ }
+    this.applyResolution();
+  },
+  // render resolution: the preset's pixel ratio times an automatic factor (see adaptResolution)
+  res: { base: 1, scale: 1, auto: true, holdUntil: 0 },
+  applyResolution() {
+    const pr = this.res.base * this.res.scale;
+    renderer.setPixelRatio(pr);
+    post.composer.setPixelRatio(pr);
+    // with this many pixels per screen pixel, 2x multisampling is plenty
+    post.setSamples(pr >= 1.4 ? Math.min(this.quality.msaa, 2) : this.quality.msaa);
     onResize();
   },
+  setAutoRes(v) {
+    this.res.auto = v;
+    if (!v && this.res.scale !== 1) { this.res.scale = 1; this.applyResolution(); }
+    try { localStorage.setItem('aq.autores', v ? '1' : '0'); } catch (e) { /* ignore */ }
+  },
 };
+try { app.res.auto = localStorage.getItem('aq.autores') !== '0'; } catch (e) { /* ignore */ }
 const ui = new UI(app);
 eco.onStory((s) => { ui.story(s); director.onStory(s); if (s.rare) audio.chime(); });
 
@@ -186,6 +210,7 @@ const ray = new THREE.Raycaster();
 const ndc = new THREE.Vector2();
 const pickables = [];
 for (const f of eco.fish) pickables.push(f.body);
+eco.onFish((f) => pickables.push(f.body));   // newborns and newcomers can be clicked too
 for (const c of eco.critters) c.root.traverse((o) => o.isMesh && pickables.push(o));
 const props = [];
 for (const it of decor.interactive) it.mesh.traverse((o) => { if (o.isMesh) { o.userData.prop = it.kind; props.push(o); } });
@@ -300,6 +325,56 @@ const software = /swiftshader|llvmpipe|software|basic render/i.test(gpu);
 console.info('GPU:', gpu);
 let fpsN = 0, fpsT = performance.now();
 renderer.info.autoReset = false;
+const gpuTimer = makeGpuTimer(gl);
+let cpuMs = 0;
+app.res.holdUntil = performance.now() + 6000;   // let start-up hiccups pass first
+
+/** GPU time of a frame, when the browser exposes timer queries (results arrive a few frames late). */
+function makeGpuTimer(gl) {
+  const ext = gl.getExtension('EXT_disjoint_timer_query_webgl2');
+  if (!ext) return null;
+  const pending = [];
+  let q = null, acc = 0, n = 0;
+  return {
+    begin() {
+      if (pending.length > 5) return;
+      q = gl.createQuery();
+      gl.beginQuery(ext.TIME_ELAPSED_EXT, q);
+    },
+    end() {
+      if (!q) return;
+      gl.endQuery(ext.TIME_ELAPSED_EXT);
+      pending.push(q);
+      q = null;
+      while (pending.length && gl.getQueryParameter(pending[0], gl.QUERY_RESULT_AVAILABLE)) {
+        const done = pending.shift();
+        if (!gl.getParameter(ext.GPU_DISJOINT_EXT)) { acc += gl.getQueryParameter(done, gl.QUERY_RESULT) / 1e6; n++; }
+        gl.deleteQuery(done);
+      }
+    },
+    take() { const v = n ? acc / n : null; acc = 0; n = 0; return v; },
+  };
+}
+
+/**
+ * Keep the frame rate above ~30: when it drops, render fewer pixels (down to half the
+ * resolution); when there is clear headroom, give the pixels back. Changes are spaced out
+ * because resizing the render targets costs a hiccup of its own.
+ */
+const fpsHistory = [];
+function adaptResolution(fps) {
+  const R = app.res;
+  fpsHistory.push(fps);
+  if (fpsHistory.length > 3) fpsHistory.shift();
+  if (!R.auto || document.hidden || performance.now() < R.holdUntil || fpsHistory.length < 2) return;
+  const avg = fpsHistory.reduce((a, b) => a + b, 0) / fpsHistory.length;
+  if (avg < 29 && R.scale > 0.5) R.scale = Math.max(0.5, Math.round((R.scale - 0.1) * 10) / 10);
+  else if (avg > 50 && R.scale < 1) R.scale = Math.min(1, Math.round((R.scale + 0.1) * 10) / 10);
+  else return;
+  R.holdUntil = performance.now() + (avg < 29 ? 2500 : 8000);
+  fpsHistory.length = 0;
+  app.applyResolution();
+}
 let showFps = true;
 try { showFps = localStorage.getItem('aq.fps') !== '0'; } catch (e) { /* ignore */ }
 fpsEl.classList.toggle('hidden', !showFps);
@@ -307,12 +382,18 @@ app.setFps = (v) => { showFps = v; fpsEl.classList.toggle('hidden', !v); try { l
 app.showFps = () => showFps;
 
 function frame() {
+  const frameStart = performance.now();
   fpsN++;
-  if (performance.now() - fpsT > 1000) {
+  if (frameStart - fpsT > 1000) {
+    const fps = fpsN * 1000 / (frameStart - fpsT);
     const inf = renderer.info.render;
-    fpsEl.textContent = `${fpsN} fps · ${inf.calls} calls · ${(inf.triangles / 1e6).toFixed(2)}M tris · ${gpu.replace(/ANGLE \((.*)\)/, '$1').slice(0, 60)}${software ? ' — ПРОГРАММНЫЙ РЕНДЕР! включите аппаратное ускорение в браузере' : ''}`;
+    const gpuMs = gpuTimer?.take();
+    const px = renderer.getDrawingBufferSize(new THREE.Vector2());
+    const scale = app.res.scale < 1 ? ` (${Math.round(app.res.scale * 100)}%)` : '';
+    fpsEl.textContent = `${Math.round(fps)} fps · CPU ${(cpuMs / fpsN).toFixed(1)} мс${gpuMs != null ? ` · GPU ${gpuMs.toFixed(1)} мс` : ''} · ${px.x}×${px.y}${scale} · ${inf.calls} calls · ${(inf.triangles / 1e6).toFixed(2)}M tris · ${gpu.replace(/ANGLE \((.*)\)/, '$1').slice(0, 48)}${software ? ' — ПРОГРАММНЫЙ РЕНДЕР! включите аппаратное ускорение в браузере' : ''}`;
     fpsEl.classList.toggle('warn', software);
-    fpsN = 0; fpsT = performance.now();
+    adaptResolution(fps);
+    fpsN = 0; fpsT = frameStart; cpuMs = 0;
   }
   const dt = Math.min(clock.getDelta(), 1 / 20);
   G.uTime.value += dt;
@@ -355,13 +436,17 @@ function frame() {
   ui.update();
   if (++frameNo % app.quality.shadowEvery === 0) renderer.shadowMap.needsUpdate = true;
   renderer.info.reset();
+  gpuTimer?.begin();
   post.composer.render(dt);
+  gpuTimer?.end();
+  cpuMs += performance.now() - frameStart;
 
   if (first) {
     first = false;
     setTimeout(() => {
       document.getElementById('loader').classList.add('gone');
-      setTimeout(() => ui.hint('Кликните по стеклу, наведите на рыбку или нажмите «Кормить»'), 1800);
+      if (away) setTimeout(() => ui.showAway(away), 900);
+      else setTimeout(() => ui.hint('Кликните по стеклу, наведите на рыбку или нажмите «Кормить»'), 1800);
     }, 300);
   }
   requestAnimationFrame(frame);
@@ -369,4 +454,8 @@ function frame() {
 requestAnimationFrame(frame);
 
 // expose for tinkering in the console
-window.aquarium = { app, eco, scene, camera, renderer };
+window.aquarium = { app, eco, scene, camera, renderer, world };
+
+// keep the aquarium's life when the tab is hidden or closed
+document.addEventListener('visibilitychange', () => { if (document.hidden) eco.save(); });
+window.addEventListener('pagehide', () => eco.save());
