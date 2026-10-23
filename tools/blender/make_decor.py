@@ -2265,4 +2265,5 @@ def main():
     shutil.rmtree(os.path.join(OUT, "_tex"), ignore_errors=True)
 
 
-main()
+if __name__ == "__main__":   # make_critters.py imports the helpers above
+    main()

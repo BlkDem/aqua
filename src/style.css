@@ -32,7 +32,8 @@ body.immersive .ui * { pointer-events: none !important; }
 /* dock */
 .dock { position: absolute; left: 50%; bottom: 22px; transform: translateX(-50%); display: flex; gap: 6px; padding: 7px; border-radius: 22px;
   background: var(--glass); backdrop-filter: blur(14px) saturate(140%); -webkit-backdrop-filter: blur(14px) saturate(140%);
-  border: 1px solid var(--edge); box-shadow: 0 10px 40px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.12); pointer-events: auto; }
+  border: 1px solid var(--edge); box-shadow: 0 10px 40px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.12); pointer-events: auto;
+  transition: transform 0.6s ease, opacity 0.6s ease; }
 .dock-btn { display: flex; flex-direction: column; align-items: center; gap: 3px; min-width: 70px; padding: 8px 10px 7px; border: 0; border-radius: 15px; background: transparent; cursor: pointer; transition: background 0.25s, transform 0.2s; }
 .dock-btn:hover { background: var(--glass-hi); transform: translateY(-2px); }
 .dock-btn:active { transform: translateY(0) scale(0.97); }
@@ -130,7 +131,7 @@ body.immersive .exit-btn.show { opacity: 1; pointer-events: auto; }
   .panel, .panel.settings { left: 10px; right: 10px; width: auto; bottom: 86px; }
   .stories { left: 10px; top: 10px; }
 }
-.fps { position: fixed; right: 10px; bottom: 8px; z-index: 40; font: 11px/1 monospace; color: rgba(220,240,255,.55); pointer-events: none; }
+.fps { position: fixed; right: 10px; bottom: 8px; z-index: 40; font: 11px/1 monospace; color: rgba(220,240,255,.55); pointer-events: none; transition: opacity 0.6s ease; }
 .fps.warn { color: #ff8a6a; font-weight: 700; }
 .settings select { width: 100%; padding: 6px 8px; border-radius: 10px; border: 1px solid var(--edge); background: rgba(0, 0, 0, 0.3); color: var(--text); font: inherit; font-size: 13px; }
 .settings select option { background: #0c1a24; }
@@ -188,3 +189,8 @@ body.immersive .exit-btn.show { opacity: 1; pointer-events: auto; }
 .away-actions button:hover { background: rgba(127, 227, 255, 0.28); }
 .gpu-help li { padding-left: 2px; }
 .gpu-help li::before { display: none; }
+
+/* full screen at rest: only the aquarium (and its stories) */
+body.idle, body.idle * { cursor: none !important; }
+body.idle .dock { opacity: 0; transform: translate(-50%, 140%); pointer-events: none; }
+body.idle .hint, body.idle .notices, body.idle .card, body.idle .hover-label, body.idle .fps, body.idle .exit-btn { opacity: 0 !important; pointer-events: none !important; }

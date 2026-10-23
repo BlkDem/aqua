@@ -1,9 +1,11 @@
 import * as THREE from 'three';
-import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { mergeGeometries, mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { patchMaterial, rand, pick, clamp } from '../fx/shaderPatch.js';
 import { TANK } from '../world/tank.js';
 
 const UP = new THREE.Vector3(0, 1, 0);
+const X_AXIS = new THREE.Vector3(1, 0, 0), Y_AXIS = new THREE.Vector3(0, 1, 0), Z_AXIS = new THREE.Vector3(0, 0, 1);
 const _a = new THREE.Vector3(), _b = new THREE.Vector3(), _m = new THREE.Matrix4(), _q = new THREE.Quaternion();
 const GLASS = { front: TANK.D / 2 - 0.08, back: -TANK.D / 2 + 0.08, side: TANK.W / 2 - 0.08 };
 
@@ -11,7 +13,7 @@ const GLASS = { front: TANK.D / 2 - 0.08, back: -TANK.D / 2 + 0.08, side: TANK.W
  * Draw a critter made of many small animated parts in a single call. The part meshes stay in
  * the scene graph, invisible, and act as bones (so the animation code below keeps moving them
  * as before); one rigidly skinned mesh with their geometry in one buffer renders them all.
- * Part colours (material colour x vertex colours) are baked into vertex colours.
+ * Part colours (material colour or userData.tint x vertex colours) are baked into vertex colours.
  */
 function skinParts(root, mat) {
   root.updateMatrixWorld(true);
@@ -19,11 +21,15 @@ function skinParts(root, mat) {
   root.traverse((o) => { if (o.isMesh) parts.push(o); });
   const extra = new Set();
   for (const m of parts) for (const k of Object.keys(m.geometry.attributes)) if (k.startsWith('a')) extra.add(k);
+  const keep = ['position', 'normal', 'color', ...extra];
+  if (parts.every((m) => m.geometry.attributes.uv)) keep.push('uv');   // textured models
   const geos = parts.map((m, i) => {
-    const g = m.geometry.index ? m.geometry.toNonIndexed() : m.geometry.clone();
-    for (const k of Object.keys(g.attributes)) if (!['position', 'normal', 'color', ...extra].includes(k)) g.deleteAttribute(k);
+    let g = m.geometry.clone();
+    for (const k of Object.keys(g.attributes)) if (!keep.includes(k)) g.deleteAttribute(k);
+    if (!g.index) g = mergeVertices(g);   // shared vertices are skinned and shaded only once
     const n = g.attributes.position.count;
-    const vc = g.attributes.color, c = m.material.color || new THREE.Color(1, 1, 1);
+    const vc = g.attributes.color, tint = m.userData.tint;
+    const c = tint ? new THREE.Color(...tint) : m.material.color || new THREE.Color(1, 1, 1);
     const col = new Float32Array(n * 3), si = new Uint16Array(n * 4), sw = new Float32Array(n * 4);
     for (let k = 0; k < n; k++) {
       col[k * 3] = (vc ? vc.getX(k) : 1) * c.r;
@@ -43,8 +49,12 @@ function skinParts(root, mat) {
   // in world space and its vertices are moved by the parts' world matrices
   const skin = new THREE.SkinnedMesh(mergeGeometries(geos), mat);
   skin.bind(new THREE.Skeleton(parts, parts.map(() => new THREE.Matrix4())), new THREE.Matrix4());
-  skin.frustumCulled = false;
   skin.castShadow = true;
+  // the skinned mesh sits at the world origin, so frustum culling uses a sphere that rides on
+  // the critter itself: its centre IS root.position (the same vector), its radius covers the
+  // model in any orientation with room for raised claws
+  const s = new THREE.Box3().setFromObject(root).getBoundingSphere(new THREE.Sphere());
+  skin.boundingSphere = new THREE.Sphere(root.position, (s.center.distanceTo(root.position) + s.radius) * 1.3);
   return skin;
 }
 
@@ -263,71 +273,81 @@ class Shrimp {
   }
 }
 
-// ============================================================ SNAIL
-function shellGeometry(type) {
-  const turns = type === 'ramshorn' ? 3.2 : 3.6;
-  const pts = [], radii = [];
-  const N = 160;
-  for (let i = 0; i <= N; i++) {
-    const t = i / N;
-    const a = t * turns * Math.PI * 2;
-    const r = 0.012 + t * (type === 'ramshorn' ? 0.06 : 0.05);
-    const h = type === 'ramshorn' ? 0 : (1 - t) * 0.11;
-    pts.push(new THREE.Vector3(Math.cos(a) * r, h, Math.sin(a) * r));
-    radii.push(0.006 + t * (type === 'ramshorn' ? 0.035 : 0.045));
-  }
-  const curve = new THREE.CatmullRomCurve3(pts);
-  const g = new THREE.TubeGeometry(curve, N, 1, 14, false);
-  const p = g.attributes.position;
-  const cols = [];
-  const c = new THREE.Color();
-  for (let i = 0; i < p.count; i++) {
-    const seg = Math.floor(i / 15);
-    const t = seg / N;
-    const center = curve.getPointAt(Math.min(1, t));
-    _a.fromBufferAttribute(p, i).sub(center);
-    _a.multiplyScalar(radii[Math.min(N, seg)]);
-    _a.add(center);
-    p.setXYZ(i, _a.x, _a.y, _a.z);
-    if (type === 'nerite') c.setHSL(0.1, 0.5, Math.sin(t * 90) > 0.2 ? 0.12 : 0.55);
-    else if (type === 'ramshorn') c.setHSL(0.0, 0.75, 0.35 + t * 0.15);
-    else c.setHSL(0.12, 0.85, 0.45 + Math.sin(t * 60) * 0.05).offsetHSL(0, 0, t * 0.1);
-    cols.push(c.r, c.g, c.b);
-  }
-  g.setAttribute('color', new THREE.Float32BufferAttribute(cols, 3));
-  g.computeVertexNormals();
-  return g;
+// ============================================================ MODELS
+// Crab and snails are modelled in Blender (tools/blender/make_critters.py): rigid parts with
+// their origins at the joints, all sharing one baked texture set.
+export const CRITTER_ASSETS = {};
+const MODELS = ['crab', 'snail-mystery', 'snail-nerite', 'snail-ramshorn'];
+
+export async function loadCritterAssets() {
+  const loader = new GLTFLoader();
+  await Promise.all(MODELS.map(async (id) => {
+    try {
+      const gltf = await loader.loadAsync(`models/critters/${id}.glb`);
+      let src = null;
+      gltf.scene.traverse((o) => { if (o.isMesh && !src) src = o.material; });
+      if (src.map) src.map.anisotropy = 8;
+      CRITTER_ASSETS[id] = { scene: gltf.scene, src, mats: {} };
+    } catch (e) {
+      console.warn('critter model missing:', id, e);
+    }
+  }));
 }
+
+/** The model's baked textures on a wet-looking physical material (one per model and look). */
+function modelMat(id, opts, caustics) {
+  const A = CRITTER_ASSETS[id], key = JSON.stringify(opts);
+  if (!A.mats[key]) {
+    const s = A.src;
+    A.mats[key] = critterMat({ map: s.map, normalMap: s.normalMap, normalScale: s.normalScale, roughnessMap: s.roughnessMap, roughness: 1, metalness: 0, ...opts }, caustics);
+  }
+  return A.mats[key];
+}
+
+/** A fresh copy of a model's parts (geometry and textures are shared). */
+function modelParts(id) {
+  const scene = CRITTER_ASSETS[id].scene.clone(true);
+  const parts = {};
+  scene.traverse((o) => { if (o.name) parts[o.name] = o; });
+  return { scene, parts };
+}
+
+/** A joint: rest pose plus rotations about axes given in the parent's frame. */
+class Joint {
+  constructor(obj) {
+    this.obj = obj;
+    this.rest = obj.quaternion.clone();
+  }
+  set(...pairs) {   // pairs of [axis, angle]
+    const q = this.obj.quaternion.copy(this.rest);
+    for (const [axis, ang] of pairs) if (ang) q.premultiply(_q.setFromAxisAngle(axis, ang));
+  }
+}
+
+// ============================================================ SNAIL
+const SNAIL = {
+  mystery: { title: 'Ампулярия', scale: 1.35 },
+  nerite: { title: 'Улитка-нерита', scale: 1.6 },
+  ramshorn: { title: 'Катушка', scale: 1.5 },
+};
+// apple snails come in several colours; the tint is multiplied over the shell's texture
+const SHELL_TINTS = [[1, 1, 1], [0.78, 0.6, 0.45], [1.04, 1.02, 0.9], [0.85, 0.95, 0.78]];
 
 class Snail {
   constructor(eco, type, name, id) {
     this.eco = eco; this.kind = 'snail'; this.name = name; this.id = id; this.type = type;
-    this.title = { nerite: 'Улитка-нерита', ramshorn: 'Катушка', mystery: 'Ампулярия' }[type];
+    this.title = SNAIL[type].title;
     this.root = new THREE.Group();
     const inner = new THREE.Group();
     this.root.add(inner);
-    const shellMat = patchMaterial(new THREE.MeshPhysicalMaterial({ vertexColors: true, roughness: 0.3, clearcoat: 1, clearcoatRoughness: 0.1 }), { caustics: 0.7 });
-    const shell = new THREE.Mesh(shellGeometry(type), shellMat);
-    shell.castShadow = true;
-    if (type === 'ramshorn') { shell.rotation.x = Math.PI / 2; shell.position.set(0, 0.07, -0.02); }
-    else { shell.rotation.x = -0.5; shell.position.set(0, 0.05, -0.02); shell.scale.setScalar(1.0); }
-    inner.add(shell);
-    const bodyMat = patchMaterial(new THREE.MeshPhysicalMaterial({ color: type === 'mystery' ? '#e9d7a8' : '#5b5248', roughness: 0.55, sheen: 1, sheenColor: new THREE.Color('#fff0d0') }), { caustics: 0.5 });
-    const foot = new THREE.Mesh(new THREE.CapsuleGeometry(0.035, 0.12, 6, 12), bodyMat);
-    foot.rotation.x = Math.PI / 2; foot.scale.set(1, 1, 0.45); foot.position.set(0, 0.016, 0.02);
-    inner.add(foot);
-    const head = new THREE.Group();
-    head.position.set(0, 0.03, 0.1);
-    inner.add(head);
-    const tentGeo = new THREE.CylinderGeometry(0.003, 0.006, 0.07, 6); tentGeo.translate(0, 0.035, 0);
-    this.tents = [];
-    for (const s of [-1, 1]) {
-      const t = new THREE.Mesh(tentGeo, bodyMat); t.position.set(s * 0.018, 0, 0); t.rotation.set(0.9, 0, s * 0.35); head.add(t);
-      const eye = new THREE.Mesh(new THREE.SphereGeometry(0.005, 6, 6), new THREE.MeshBasicMaterial({ color: '#111' })); eye.position.y = 0.07; t.add(eye);
-      this.tents.push(t);
-    }
-    this.root.scale.setScalar(type === 'mystery' ? 1.6 : 1.1);
-    this.skinMat = critterMat({ roughness: 0.35, clearcoat: 0.7, clearcoatRoughness: 0.15, sheen: 0.4, sheenColor: new THREE.Color('#fff0d0') }, 0.7);
+    const { scene, parts } = modelParts('snail-' + type);
+    inner.add(scene);
+    this.shell = parts.Shell;
+    this.shellRest = this.shell.position.clone();
+    if (type === 'mystery') this.shell.userData.tint = SHELL_TINTS[id % SHELL_TINTS.length];
+    this.tents = [parts.TentL, parts.TentR].map((o) => new Joint(o));
+    this.root.scale.setScalar(SNAIL[type].scale * rand(0.9, 1.1));
+    this.skinMat = modelMat('snail-' + type, { clearcoat: 0.8, clearcoatRoughness: 0.15 }, 0.7);
     this.root.traverse((o) => { if (o.isMesh) o.userData.critter = this; });
     this.inner = inner;
     this.mode = 'ground';
@@ -337,6 +357,7 @@ class Snail {
     this.ang = rand(0, 6.28);
     this.retract = 0;
     this.t = 0;
+    this.crawl = 0;
     this.goal = null;
     this.reachedTop = false;
   }
@@ -365,12 +386,8 @@ class Snail {
     this.t += dt;
     if (this.pause > 0) { this.pause -= dt; }
     else this.retract = Math.max(0, this.retract - dt * 0.6);
-    for (const t of this.tents) t.scale.y = 1 - this.retract * 0.85;
-    this.inner.position.y = Math.sin(this.t * 0.8) * 0.002;
     const speed = this.pause > 0 ? 0 : 0.035 * (1 - this.retract);
-    // tentacles wave
-    this.tents[0].rotation.z = -0.35 + Math.sin(this.t * 1.3) * 0.15;
-    this.tents[1].rotation.z = 0.35 + Math.sin(this.t * 1.1 + 1) * 0.15;
+    this.animate(dt, speed);
 
     // food on ground nearby
     if (!this.food && eco.food.length && Math.random() < dt * 0.3) {
@@ -423,6 +440,20 @@ class Snail {
     const nearWall = Math.abs(nx) > GLASS.side - 0.2 ? (nx > 0 ? 'right' : 'left') : (nz > GLASS.front - 0.2 ? 'front' : nz < GLASS.back + 0.2 ? 'back' : null);
     if (nearWall && Math.random() < dt * 0.5) this.toGlass(nearWall);
   }
+  /** Tentacles feel about (and pull in when scared); the foot ripples and the shell sways as it glides. */
+  animate(dt, speed) {
+    const t = this.t;
+    this.crawl += speed * dt * 60;
+    this.tents.forEach((j, i) => {
+      const s = i ? -1 : 1;
+      j.set([X_AXIS, Math.sin(t * 1.3 + i * 1.7) * 0.18 - 0.05], [Z_AXIS, s * Math.sin(t * 0.9 + i) * 0.18]);
+      j.obj.scale.set(1, 1 - this.retract * 0.85, 1);
+    });
+    const glide = Math.min(1, speed / 0.03);
+    this.inner.scale.set(1, 1, 1 + Math.sin(this.crawl * 0.9) * 0.025 * glide);
+    this.shell.rotation.set(Math.sin(t * 0.7) * 0.02 - this.retract * 0.12, 0, Math.sin(this.crawl * 0.45 + 1) * 0.04 * glide);
+    this.shell.position.copy(this.shellRest).y -= this.retract * 0.006;
+  }
   toGlass(pane) {
     this.mode = 'glass'; this.pane = pane;
     this.u = pane === 'back' || pane === 'front' ? this.pos.x : this.pos.z;
@@ -437,41 +468,75 @@ class Snail {
 }
 
 // ============================================================ CRAB
+
+/** A walking leg: hip (swing and lift), knee and ankle, all hinged across the leg. */
+class Leg {
+  constructor(parts, side, i) {
+    this.j = [0, 1, 2].map((k) => new Joint(parts[`Leg${side}${i}_${k}`]));
+    const out = this.j[1].obj.position.clone().setY(0).normalize();   // horizontal direction of the leg
+    this.hinge = new THREE.Vector3().crossVectors(out, Y_AXIS).normalize();   // + lifts the leg
+    this.s = side === 'L' ? 1 : -1;
+    // alternating tetrapod gait: L0 R1 L2 R3 step together, then the other four
+    this.phase = ((i + (side === 'L' ? 0 : 1)) % 2) * Math.PI + i * 0.25;
+  }
+  pose(walk, amp, dir, rest) {
+    const ph = walk + this.phase;
+    const lift = Math.max(0, Math.sin(ph)) * amp;
+    // reach: the tip moves along the walking direction while in the air and back on the ground
+    const reach = Math.cos(ph) * amp * dir * this.s;
+    this.j[0].set([this.hinge, 0.42 * lift - 0.1 * reach + rest * 0.05], [Y_AXIS, 0.1 * Math.sin(ph) * amp]);
+    this.j[1].set([this.hinge, 0.28 * reach - 0.2 * lift - rest * 0.08]);
+    this.j[2].set([this.hinge, 0.12 * reach + 0.15 * lift]);
+  }
+}
+
 class Crab {
   constructor(eco, name, id) {
     this.eco = eco; this.kind = 'crab'; this.name = name; this.id = id;
     this.title = 'Крабик';
-    const mat = patchMaterial(new THREE.MeshPhysicalMaterial({ color: '#ff6a3a', roughness: 0.35, clearcoat: 1 }), { caustics: 0.6 });
-    const dark = new THREE.MeshStandardMaterial({ color: '#111' });
     this.root = new THREE.Group();
-    const body = new THREE.Mesh(new THREE.SphereGeometry(0.09, 20, 14), mat); body.scale.set(1.3, 0.55, 1); body.position.y = 0.07; body.castShadow = true;
-    this.root.add(body);
+    const { scene, parts } = modelParts('crab');
+    this.root.add(scene);
+    this.body = scene.getObjectByName('Body');
+    this.bodyY = this.body.position.y;
     this.legs = [];
-    const lg = new THREE.CylinderGeometry(0.008, 0.006, 0.11, 6); lg.translate(0, -0.055, 0);
-    for (const s of [-1, 1]) for (let i = 0; i < 4; i++) {
-      const piv = new THREE.Group(); piv.position.set(s * 0.09, 0.07, 0.04 - i * 0.03);
-      const l = new THREE.Mesh(lg, mat); l.rotation.z = s * 1.0; piv.add(l);
-      this.root.add(piv); this.legs.push({ piv, s, i });
-    }
-    this.claws = [];
-    for (const s of [-1, 1]) {
-      const piv = new THREE.Group(); piv.position.set(s * 0.07, 0.08, 0.08);
-      const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.07, 6), mat); arm.rotation.x = Math.PI / 2; arm.position.z = 0.035; piv.add(arm);
-      const claw = new THREE.Mesh(new THREE.SphereGeometry(0.03, 12, 8), mat); claw.scale.set(0.8, 0.6, 1.3); claw.position.z = 0.08; piv.add(claw);
-      this.root.add(piv); this.claws.push(piv);
-      const st = new THREE.Mesh(new THREE.CylinderGeometry(0.005, 0.005, 0.05, 4), mat); st.position.set(s * 0.025, 0.12, 0.06); this.root.add(st);
-      const e = new THREE.Mesh(new THREE.SphereGeometry(0.012, 8, 6), dark); e.position.set(s * 0.025, 0.15, 0.06); this.root.add(e);
-    }
+    for (const side of ['L', 'R']) for (let i = 0; i < 4; i++) this.legs.push(new Leg(parts, side, i));
+    this.claws = ['L', 'R'].map((side) => {
+      const j = [0, 1, 2, 3].map((k) => new Joint(parts[`Claw${side}_${k}`]));
+      // the movable finger opens about an axis across the palm
+      const palmDir = j[3].obj.position.clone().normalize();
+      return { j, s: side === 'L' ? 1 : -1, open: new THREE.Vector3().crossVectors(palmDir, Y_AXIS).normalize() };
+    });
+    this.eyes = [parts.EyeL, parts.EyeR].map((o) => new Joint(o));
+    this.root.scale.setScalar(0.95);
     this.root.traverse((o) => { if (o.isMesh) o.userData.critter = this; });
-    this.skinMat = critterMat({ roughness: 0.35, clearcoat: 1 }, 0.6);
+    this.skinMat = modelMat('crab', { clearcoat: 0.9, clearcoatRoughness: 0.25 }, 0.6);
     this.pos = new THREE.Vector3(); this.facing = rand(0, 6.28); this.t = 0; this.goal = null; this.wave = 0; this.walk = 0;
+    this.amp = 0; this.dir = 1; this.scared = 0; this.pick = 0; this.food = null;
   }
   init() { this.pos.copy(this.eco.randomSurfacePoint(true)); }
-  scare(from) { _a.copy(this.pos).sub(from).setY(0).normalize(); this.goal = this.eco.surfacePoint(this.pos.x + _a.x * 1.2, this.pos.z + _a.z * 1.2); this.fast = 2; }
+  scare(from) {
+    _a.copy(this.pos).sub(from).setY(0).normalize();
+    this.goal = this.eco.surfacePoint(this.pos.x + _a.x * 1.2, this.pos.z + _a.z * 1.2);
+    this.fast = 2; this.idle = 0; this.scared = 1.5; this.food = null;
+  }
   update(dt) {
     const eco = this.eco;
     this.t += dt;
     this.fast = Math.max(0, (this.fast || 0) - dt);
+    this.scared = Math.max(0, this.scared - dt);
+    // a flake on the ground nearby: go and pick at it with the claws
+    if (!this.food && !this.fast && eco.food.length && Math.random() < dt * 0.5) {
+      const f = eco.food.find((f) => !f.eaten && f.grounded && f.pos.distanceTo(this.pos) < 1.8);
+      if (f) { this.food = f; this.goal = f.pos; this.idle = 0; }
+    }
+    if (this.food) {
+      if (this.food.eaten) { this.food = null; this.goal = null; }
+      else if (this.pos.distanceTo(this.food.pos) < 0.12) {
+        eco.eatFood(this.food, this);
+        this.food = null; this.goal = null; this.idle = rand(2, 3.5); this.pick = this.idle;
+      }
+    }
     if (this.idle > 0) { this.idle -= dt; }
     else if (!this.goal || this.pos.distanceTo(this.goal) < 0.05) {
       this.goal = eco.randomSurfacePoint(true, this.pos, 1.5);
@@ -486,18 +551,71 @@ class Crab {
       // crabs walk sideways: body faces perpendicular to motion
       const target = Math.atan2(_a.x, _a.z) + Math.PI / 2;
       let dd = target - this.facing; dd = Math.atan2(Math.sin(dd), Math.cos(dd));
-      if (Math.abs(dd) > Math.PI / 2) dd -= Math.sign(dd) * Math.PI;
+      let side = 1;
+      if (Math.abs(dd) > Math.PI / 2) { dd -= Math.sign(dd) * Math.PI; side = -1; }
       this.facing += dd * Math.min(1, dt * 2);
+      this.dir = side;   // walking toward the body's left (+1) or right (-1)
       const nx = this.pos.x + _a.x * speed * dt, nz = this.pos.z + _a.z * speed * dt;
       this.pos.set(nx, eco.surfaceAt(nx, nz), nz);
     }
-    this.walk += speed * dt * 120;
-    for (const L of this.legs) L.piv.rotation.x = Math.sin(this.walk + L.i * 1.3 + (L.s > 0 ? 0 : Math.PI)) * (speed > 0 ? 0.35 : 0.02);
-    this.wave = Math.max(0, this.wave - dt);
-    this.claws.forEach((c, i) => { c.rotation.x = this.wave > 0 ? -0.8 + Math.sin(this.t * 8 + i * 3) * 0.6 : Math.sin(this.t * 1.2 + i) * 0.1; c.rotation.y = (i ? -1 : 1) * 0.3; });
+    this.animate(dt, speed);
     this.root.position.copy(this.pos);
     orient(this.root, eco.surfaceNormal(this.pos.x, this.pos.z), _b.set(Math.sin(this.facing), 0, Math.cos(this.facing)), 1 - Math.exp(-5 * dt));
   }
+  animate(dt, speed) {
+    const t = this.t;
+    this.amp += ((speed > 0.01 ? 1 : 0) - this.amp) * Math.min(1, dt * 6);
+    this.walk += speed * dt * 95;
+    const breathe = Math.sin(t * 1.4) * 0.5 + 0.5;
+    for (const L of this.legs) L.pose(this.walk, this.amp, this.dir, breathe * (1 - this.amp));
+    // the body bobs with the steps and crouches when frightened
+    this.body.position.y = this.bodyY + Math.abs(Math.sin(this.walk)) * 0.004 * this.amp - this.scared * 0.008;
+    this.wave = Math.max(0, this.wave - dt);
+    this.pick = Math.max(0, this.pick - dt);
+    this.claws.forEach((c, i) => {
+      const [merus, carpus, palm, finger] = c.j;
+      let raise = Math.sin(t * 1.2 + i) * 0.05, swing = 0, wrist = 0, open = 0.08 + Math.sin(t * 0.8 + i * 2) * 0.06;
+      if (this.wave > 0) {
+        // a threat display: claws up and open, snapping
+        raise = -0.75 + Math.sin(t * 6 + i * 3) * 0.25;
+        open = 0.45 + Math.sin(t * 9 + i) * 0.3;
+      } else if (this.pick > 0) {
+        // picking at the ground and bringing the morsel to the mouth, claws taking turns
+        const k = Math.sin(t * 5 + i * Math.PI);
+        raise = k > 0 ? -0.35 * k : 0.15 * -k;
+        swing = c.s * 0.35 * Math.max(0, k);
+        wrist = c.s * 0.3 * Math.max(0, k);
+        open = k < 0 ? 0.4 * -k : 0.05;
+      } else if (this.scared > 0) {
+        raise = -0.3; open = 0.5;   // claws up in defence
+      }
+      merus.set([X_AXIS, raise], [Y_AXIS, swing - this.amp * c.s * 0.05]);
+      carpus.set([Y_AXIS, wrist]);
+      palm.set([X_AXIS, Math.sin(t * 0.7 + i) * 0.05]);
+      finger.set([c.open, open]);
+    });
+    // eyes on stalks: look about, fold down when frightened
+    this.eyes.forEach((e, i) => e.set([X_AXIS, this.scared > 0 ? 0.9 : Math.sin(t * 0.6 + i * 2) * 0.12], [Y_AXIS, Math.sin(t * 0.43 + i) * 0.2]));
+  }
+}
+
+/**
+ * An invisible low-poly ellipsoid around a modelled critter for the mouse to hit, instead of
+ * testing its detailed parts on every pointer move.
+ */
+const PROXY = new THREE.SphereGeometry(1, 10, 8);
+function pickProxy(c) {
+  c.root.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(c.root.children[0]);
+  const inv = new THREE.Matrix4().copy(c.root.matrixWorld).invert();
+  box.applyMatrix4(inv);   // into the root's own frame
+  const m = new THREE.Mesh(PROXY, new THREE.MeshBasicMaterial());
+  m.visible = false;
+  box.getCenter(m.position);
+  box.getSize(m.scale).multiplyScalar(0.55);
+  m.userData.critter = c;
+  c.root.add(m);
+  return m;
 }
 
 export function buildCritters(eco, scene) {
@@ -506,12 +624,18 @@ export function buildCritters(eco, scene) {
   const shrimpNames = ['Креветыч', 'Вишенка', 'Клешня', 'Усик', 'Малинка', 'Голубика', 'Лимончик', 'Призрачка'];
   shrimpCols.forEach((c, i) => list.push(new Shrimp(eco, c, shrimpNames[i], eco.nextId++)));
   const snails = [['mystery', 'Галя', true], ['nerite', 'Зебра', true], ['ramshorn', 'Завиток', false], ['nerite', 'Тихоход', false], ['mystery', 'Турбо', true], ['ramshorn', 'Колесо', false]];
-  for (const [type, name, glass] of snails) { const s = new Snail(eco, type, name, eco.nextId++); s._glass = glass; list.push(s); }
-  list.push(new Crab(eco, 'Краб Валера', eco.nextId++));
+  for (const [type, name, glass] of snails) {
+    if (!CRITTER_ASSETS['snail-' + type]) continue;
+    const s = new Snail(eco, type, name, eco.nextId++);
+    s._glass = glass;
+    list.push(s);
+  }
+  if (CRITTER_ASSETS.crab) list.push(new Crab(eco, 'Краб Валера', eco.nextId++));
   for (const c of list) {
     c.init(c._glass);
     scene.add(c.root);
     scene.add(c.skin = skinParts(c.root, c.skinMat));
+    if (c.kind !== 'shrimp') c.pickMesh = pickProxy(c);
   }
   return list;
 }

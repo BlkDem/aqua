@@ -35,6 +35,7 @@ npm run build    # production-сборка в dist/
 | Кормить | кнопка или `F` |
 | Наблюдать / Cinematic | кнопки или `O` / `C`, выход — `Esc` |
 | Скрыть интерфейс | `H` |
+| Во весь экран | кнопка «Экран» (или `F11`): через 3 секунды без движения мыши курсор и панель кнопок прячутся, остаётся только аквариум и истории; любое движение возвращает их |
 
 ## Структура
 
@@ -57,7 +58,7 @@ src/
   life/fish.js         ИИ рыбы: состояния, стаи, территория, игры, память, мальки, пары
   life/world.js        сохранение мира, время, имена, история
   life/lifecycle.js    рост, стадии, пары, нерест, наследование, «пока вас не было»
-  life/critters.js     креветки, улитки, крабик
+  life/critters.js     креветки, улитки, крабик: поведение, походка, анимация суставов
   life/ecosystem.js    мир: истории, случайные и редкие события, кормление, секреты
   ui/ui.js             минимальный интерфейс
   pwa.js               установка как приложение, офлайн-режим, предложение обновиться
@@ -66,6 +67,7 @@ tools/blender/
   make_fish.py         модели рыб           → public/models/fish
   make_decor.py        декор и кораллы      → public/models/decor (процедурные материалы запекаются в текстуры)
   make_plants.py       растения и мох       → public/models/plants
+  make_critters.py     краб и улитки        → public/models/critters (части-суставы, общий запечённый атлас)
 ```
 
 Модели пересобираются в Blender без интерфейса, например:
@@ -73,6 +75,7 @@ tools/blender/
 ```bash
 blender -b -P tools/blender/make_decor.py -- public/models/decor castle ship
 blender -b -P tools/blender/make_plants.py -- public/models/plants
+blender -b -P tools/blender/make_critters.py -- public/models/critters crab snail-mystery
 ```
 
 Запекание декора идёт в Cycles; если в системе есть GPU (OptiX/CUDA/HIP), он используется автоматически.

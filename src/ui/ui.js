@@ -6,9 +6,12 @@ import { pwa } from '../pwa.js';
 import { KIND_TITLE, gpuPref, setGpuPref, switchHelp } from '../fx/gpu.js';
 
 const PREFS = 'aq.settings';
+const IDLE_MS = 3000;   // the pointer rests this long before the chrome hides
 const h = (tag, cls, html) => { const e = document.createElement(tag); if (cls) e.className = cls; if (html != null) e.innerHTML = html; return e; };
 
 const ICONS = {
+  full: '<svg viewBox="0 0 24 24"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5" fill="none" stroke-width="1.9"/></svg>',
+  unfull: '<svg viewBox="0 0 24 24"><path d="M9 4v5H4M20 9h-5V4M15 20v-5h5M4 15h5v5" fill="none" stroke-width="1.9"/></svg>',
   feed: '<svg viewBox="0 0 24 24"><circle cx="7" cy="8" r="1.6"/><circle cx="12" cy="5.5" r="1.6"/><circle cx="16.5" cy="9" r="1.6"/><circle cx="10" cy="12" r="1.6"/><circle cx="14" cy="15" r="1.6"/><circle cx="9" cy="18.5" r="1.6"/></svg>',
   watch: '<svg viewBox="0 0 24 24"><path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12z" fill="none" stroke-width="1.8"/><circle cx="12" cy="12" r="3"/></svg>',
   cine: '<svg viewBox="0 0 24 24"><rect x="3" y="6" width="13" height="12" rx="2.5" fill="none" stroke-width="1.8"/><path d="M16 10.5l5-3v9l-5-3z"/></svg>',
@@ -51,6 +54,18 @@ export class UI {
       this.hint(m === 'auto' ? 'Смена дня и ночи: автоматически' : `Освещение: ${b.querySelector('.lbl').textContent}`);
     });
     btn('settings', 'Настройки', ICONS.gear, () => this.togglePanel('settings'));
+    // full screen (not offered where the page cannot do it, or already runs full screen as an app)
+    if (document.fullscreenEnabled && !matchMedia('(display-mode: fullscreen)').matches) {
+      this.fullBtn = btn('full', 'Экран', ICONS.full, () => {
+        if (document.fullscreenElement) document.exitFullscreen();
+        else document.documentElement.requestFullscreen({ navigationUI: 'hide' }).catch(() => {});
+      });
+      document.addEventListener('fullscreenchange', () => {
+        const on = !!document.fullscreenElement;
+        this.fullBtn.querySelector('.ico').innerHTML = on ? ICONS.unfull : ICONS.full;
+        this.fullBtn.querySelector('.lbl').textContent = on ? 'Окно' : 'Экран';
+      });
+    }
     root.appendChild(dock);
 
     // notices in the top right corner (new version, graphics card)
@@ -82,6 +97,8 @@ export class UI {
     this.panels.roster = this.buildRoster();
     this.panels.settings = this.buildSettings();
 
+    this.setupIdle();
+
     // exit button for immersive modes
     this.exitBtn = h('button', 'exit-btn', '✕ Выйти');
     this.exitBtn.addEventListener('click', (e) => { e.stopPropagation(); app.setMode('free'); });
@@ -93,6 +110,34 @@ export class UI {
       clearTimeout(moveT);
       moveT = setTimeout(() => this.exitBtn.classList.remove('show'), 2200);
     });
+  }
+
+  /**
+   * Full screen (or the immersive modes): when the pointer rests for a few seconds, hide the
+   * cursor, the toolbar and the other chrome, leaving the aquarium and its stories. Any
+   * movement brings them back. Nothing hides while a panel or a dialog is open, or while the
+   * pointer rests on the toolbar or a card.
+   */
+  setupIdle() {
+    const body = document.body;
+    let timer = 0, overUi = false;
+    const full = () => !!document.fullscreenElement || matchMedia('(display-mode: fullscreen)').matches
+      || (Math.abs(window.innerWidth - screen.width) < 2 && Math.abs(window.innerHeight - screen.height) < 2);
+    const busy = () => overUi || Object.values(this.panels).some((p) => p.classList.contains('open')) || !!this.root.querySelector('.away');
+    const sleep = () => {
+      if (!(full() || body.classList.contains('immersive'))) return;
+      if (busy()) { timer = setTimeout(sleep, IDLE_MS); return; }
+      body.classList.add('idle');
+    };
+    const wake = (e) => {
+      if (e?.target?.closest) overUi = !!e.target.closest('.dock, .card, .notices, .panel, .away');
+      body.classList.remove('idle');
+      clearTimeout(timer);
+      timer = setTimeout(sleep, IDLE_MS);
+    };
+    for (const ev of ['pointermove', 'pointerdown', 'keydown', 'wheel', 'touchstart']) window.addEventListener(ev, wake, { passive: true });
+    document.addEventListener('fullscreenchange', wake);
+    wake();
   }
 
   hint(text) {

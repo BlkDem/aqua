@@ -15,6 +15,7 @@ import { Ecosystem } from './life/ecosystem.js';
 import { World } from './life/world.js';
 import { catchUp } from './life/lifecycle.js';
 import { loadFishAssets } from './life/fishAssets.js';
+import { loadCritterAssets } from './life/critters.js';
 import { SPECIES } from './life/species.js';
 import { UI } from './ui/ui.js';
 import { startPwa } from './pwa.js';
@@ -107,6 +108,7 @@ const bubbles = new Bubbles(scene);
 const dust = buildDust(scene);
 const rays = buildGodRays(scene);
 await loadFishAssets(Object.values(SPECIES).flatMap((sp) => (sp.texVariants ? sp.variants.map((_, k) => `${sp.id}-${k}`) : [sp.id])));
+await loadCritterAssets();
 // the world kept living while the page was closed: catch up before anyone appears on screen
 const away = catchUp(world, world.now());
 const sprouted = plants.tick(world.now());
@@ -228,7 +230,10 @@ const ndc = new THREE.Vector2();
 const pickables = [];
 for (const f of eco.fish) pickables.push(f.body);
 eco.onFish((f) => pickables.push(f.body));   // newborns and newcomers can be clicked too
-for (const c of eco.critters) c.root.traverse((o) => o.isMesh && pickables.push(o));
+for (const c of eco.critters) {
+  if (c.pickMesh) pickables.push(c.pickMesh);   // modelled critters: a simple stand-in shape
+  else c.root.traverse((o) => o.isMesh && pickables.push(o));
+}
 const props = [];
 for (const it of decor.interactive) it.mesh.traverse((o) => { if (o.isMesh) { o.userData.prop = it.kind; props.push(o); } });
 const frontPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), -(TANK.D / 2));
