@@ -17,9 +17,12 @@ import { catchUp } from './life/lifecycle.js';
 import { loadFishAssets } from './life/fishAssets.js';
 import { SPECIES } from './life/species.js';
 import { UI } from './ui/ui.js';
+import { startPwa } from './pwa.js';
+import { classifyGpu, gpuPref, probeAdapters, gpuVerdict } from './fx/gpu.js';
 
 // ------------------------------------------------------------------ renderer
-const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
+// the card is only a wish: browsers may ignore it (see fx/gpu.js for what we do about that)
+const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: gpuPref() });
 renderer.setPixelRatio(1);
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.shadowMap.enabled = true;
@@ -27,6 +30,14 @@ renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.shadowMap.autoUpdate = false; // refreshed manually, see quality.shadowEvery
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.0;
+
+// which card we got (the browser may not have honoured the wish above)
+const gl = renderer.getContext();
+const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+const gpu = dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
+const gpuInfo = classifyGpu(gpu);
+const software = gpuInfo.kind === 'software';
+console.info('GPU:', gpu, '→', gpuInfo.kind);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 document.getElementById('app').appendChild(renderer.domElement);
 
@@ -138,15 +149,16 @@ scene.add(halo);
 // bloom: internal resolution of the bloom chain (half looks the same and costs a quarter);
 // shadowEvery: the shadow map is redrawn every N frames
 const QUALITY = {
-  low: { pr: 0.75, msaa: 0, shadowEvery: 3, bloom: 0.35, dust: 0.4 },
-  medium: { pr: 1, msaa: 2, shadowEvery: 2, bloom: 0.5, dust: 0.7 },
-  high: { pr: 1, msaa: 4, shadowEvery: 2, bloom: 0.6, dust: 1 },
-  ultra: { pr: 'dpr', msaa: 4, shadowEvery: 2, bloom: 0.5, dust: 1 },
+  low: { pr: 0.75, msaa: 0, shadowEvery: 3, shadowMap: 1024, bloom: 0.35, dust: 0.4 },
+  medium: { pr: 1, msaa: 2, shadowEvery: 2, shadowMap: 2048, bloom: 0.5, dust: 0.7 },
+  high: { pr: 1, msaa: 4, shadowEvery: 2, shadowMap: 2048, bloom: 0.6, dust: 1 },
+  ultra: { pr: 'dpr', msaa: 4, shadowEvery: 2, shadowMap: 2048, bloom: 0.5, dust: 1 },
 };
+const QUALITY_ORDER = ['low', 'medium', 'high', 'ultra'];
 
 // ------------------------------------------------------------------ app facade
 const app = {
-  eco, director, audio, post, day, dayCtx, selected: null, mode: 'free',
+  eco, director, audio, post, day, dayCtx, gpu: gpuInfo, selected: null, mode: 'free',
   feed() {
     eco.feed();
     audio.sprinkle();
@@ -181,6 +193,11 @@ const app = {
     this.res.scale = 1;
     post.setBloomScale(Q.bloom);
     dust.pts.geometry.setDrawRange(0, Math.floor(dust.count * Q.dust));
+    if (sun.shadow.mapSize.x !== Q.shadowMap) {
+      sun.shadow.mapSize.set(Q.shadowMap, Q.shadowMap);
+      sun.shadow.map?.dispose();
+      sun.shadow.map = null;
+    }
     renderer.shadowMap.needsUpdate = true;
     try { localStorage.setItem('aq.quality', name); } catch (e) { /* ignore */ }
     this.applyResolution();
@@ -308,9 +325,11 @@ window.addEventListener('resize', onResize);
 // ------------------------------------------------------------------ loop
 const clock = new THREE.Clock();
 let frameNo = 0;
-let savedQ = 'medium';
-try { savedQ = localStorage.getItem('aq.quality') || 'medium'; } catch (e) { /* ignore */ }
-app.setQuality(savedQ);
+// on first start the quality is chosen by the card (built-in graphics → low)
+let savedQ = null;
+try { savedQ = localStorage.getItem('aq.quality'); } catch (e) { /* ignore */ }
+app.setQuality(savedQ || (software || gpuInfo.kind === 'integrated' || gpuInfo.kind === 'mobile' ? 'low' : 'medium'));
+ui.qualityChanged(app.quality.name);
 let first = true;
 // let the world run for a few seconds "off camera" so it is alive at first sight
 for (let i = 0; i < 90; i++) { eco.update(1 / 30); bubbles.update(1 / 30, i / 30); }
@@ -318,11 +337,6 @@ for (let i = 0; i < 90; i++) { eco.update(1 / 30); bubbles.update(1 / 30, i / 30
 const fpsEl = document.createElement('div');
 fpsEl.className = 'fps';
 document.body.appendChild(fpsEl);
-const gl = renderer.getContext();
-const dbg = gl.getExtension('WEBGL_debug_renderer_info');
-const gpu = dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : 'unknown';
-const software = /swiftshader|llvmpipe|software|basic render/i.test(gpu);
-console.info('GPU:', gpu);
 let fpsN = 0, fpsT = performance.now();
 renderer.info.autoReset = false;
 const gpuTimer = makeGpuTimer(gl);
@@ -362,12 +376,27 @@ function makeGpuTimer(gl) {
  * because resizing the render targets costs a hiccup of its own.
  */
 const fpsHistory = [];
+let slowAtFloor = 0;
 function adaptResolution(fps) {
   const R = app.res;
   fpsHistory.push(fps);
   if (fpsHistory.length > 3) fpsHistory.shift();
   if (!R.auto || document.hidden || performance.now() < R.holdUntil || fpsHistory.length < 2) return;
   const avg = fpsHistory.reduce((a, b) => a + b, 0) / fpsHistory.length;
+  // already at half resolution and still slow: step the quality preset down as well
+  slowAtFloor = R.scale <= 0.5 && avg < 24 ? slowAtFloor + 1 : 0;
+  const qi = QUALITY_ORDER.indexOf(app.quality.name);
+  if (slowAtFloor >= 4 && qi > 0) {
+    slowAtFloor = 0;
+    fpsHistory.length = 0;
+    const name = QUALITY_ORDER[qi - 1];
+    app.setQuality(name);
+    R.scale = 0.7;
+    R.holdUntil = performance.now() + 4000;
+    app.applyResolution();
+    ui.qualityChanged(name, true);
+    return;
+  }
   if (avg < 29 && R.scale > 0.5) R.scale = Math.max(0.5, Math.round((R.scale - 0.1) * 10) / 10);
   else if (avg > 50 && R.scale < 1) R.scale = Math.min(1, Math.round((R.scale + 0.1) * 10) / 10);
   else return;
@@ -445,6 +474,15 @@ function frame() {
     first = false;
     setTimeout(() => {
       document.getElementById('loader').classList.add('gone');
+      startPwa();   // after the models have loaded, so they can be kept for offline use
+      // on built-in graphics, point out a stronger card (once per card, unless asked again)
+      if (gpuInfo.kind === 'integrated' || software || gpuInfo.kind === 'unknown') {
+        probeAdapters().then((probe) => {
+          app.gpuProbe = probe;
+          const v = gpuVerdict(gpuInfo, probe);
+          if (v) ui.gpuNotice(v);
+        });
+      }
       if (away) setTimeout(() => ui.showAway(away), 900);
       else setTimeout(() => ui.hint('Кликните по стеклу, наведите на рыбку или нажмите «Кормить»'), 1800);
     }, 300);

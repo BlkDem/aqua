@@ -2,6 +2,8 @@
 import { SPECIES } from '../life/species.js';
 import { STAGE, RARE } from '../life/lifecycle.js';
 import { duration } from '../life/words.js';
+import { pwa } from '../pwa.js';
+import { KIND_TITLE, gpuPref, setGpuPref, switchHelp } from '../fx/gpu.js';
 
 const PREFS = 'aq.settings';
 const h = (tag, cls, html) => { const e = document.createElement(tag); if (cls) e.className = cls; if (html != null) e.innerHTML = html; return e; };
@@ -50,6 +52,10 @@ export class UI {
     });
     btn('settings', 'Настройки', ICONS.gear, () => this.togglePanel('settings'));
     root.appendChild(dock);
+
+    // notices in the top right corner (new version, graphics card)
+    this.notices = h('div', 'notices');
+    root.appendChild(this.notices);
 
     // hint bubble
     this.hintEl = h('div', 'hint');
@@ -275,6 +281,8 @@ export class UI {
         <div class="sect">Время и события</div>
         ${range('cycle', 'Длина суток', 2, 30, 1, app.day.cycleMinutes)}
         ${check('stories', 'Показывать истории', this.showStories)}
+        <div class="sect">Приложение</div>
+        <div class="app-box"></div>
         <div class="tip">Кликните по стеклу, чтобы постучать. Наведите на рыбку, чтобы узнать имя. В аквариуме спрятано несколько секретов…</div>
       </div>
       <div class="set-body" data-p="view">
@@ -286,6 +294,11 @@ export class UI {
         ${range('bloom', 'Свечение', 0, 1.5, 0.01, app.post.bloom.strength)}
         ${range('exposure', 'Яркость', 0.6, 1.6, 0.01, app.dayCtx.exposureMul)}
         ${check('fps', 'Показывать FPS и видеокарту', fpsOn)}
+        <div class="sect">Видеокарта</div>
+        <div class="tip gpu-name"></div>
+        <label>Предпочитать <select data-k="gpuPref"><option value="high-performance">Мощную (дискретную)</option><option value="low-power">Экономную (встроенную)</option></select></label>
+        <div class="gpu-reload hidden"><button class="wide">Перезапустить аквариум</button></div>
+        <button class="wide gpu-help-btn">Как переключить видеокарту</button>
       </div>
       <div class="set-body" data-p="sound">
         ${range('master', 'Громкость', 0, 1, 0.01, app.audio.vol.master)}
@@ -317,6 +330,17 @@ export class UI {
       sel.value = String(F[k]);
       sel.addEventListener('change', () => { F[k] = k === 'perDay' ? Number(sel.value) : sel.value; app.eco.save(); });
     }
+    const g = app.gpu;
+    p.querySelector('.gpu-name').innerHTML = `Сейчас рисует: <b>${g.name}</b>${KIND_TITLE[g.kind] ? ` — ${KIND_TITLE[g.kind]}` : ''}`;
+    const gs = p.querySelector('select[data-k="gpuPref"]');
+    gs.value = gpuPref();
+    gs.addEventListener('change', () => {
+      setGpuPref(gs.value);
+      p.querySelector('.gpu-reload').classList.remove('hidden');
+      this.hint('Видеокарта выбирается при запуске — перезапустите аквариум');
+    });
+    p.querySelector('.gpu-reload button').addEventListener('click', () => { app.eco.save(); location.reload(); });
+    p.querySelector('.gpu-help-btn').addEventListener('click', () => this.showGpuHelp());
     const qs = p.querySelector('select[data-k="quality"]');
     try { qs.value = localStorage.getItem('aq.quality') || 'medium'; } catch (e) { qs.value = 'medium'; }
     qs.addEventListener('change', () => { app.setQuality(qs.value); this.hint(`Качество: ${qs.options[qs.selectedIndex].text}`); });
@@ -328,8 +352,82 @@ export class UI {
       else if (k === 'feeder') { F.on = v; app.eco.save(); this.hint(v ? 'Автокормушка включена' : 'Автокормушка выключена — рыбки не пропадут, просто кормите сами, когда захочется'); }
       else { P[k] = v; this.applyPref(k, v); this.savePrefs(); }
     }));
+    this.appBox = p.querySelector('.app-box');
+    pwa.onChange = () => this.renderApp();
+    pwa.onUpdate = (apply) => this.offerUpdate(apply);
+    this.renderApp();
     this.root.appendChild(p);
     return p;
+  }
+
+  /** Install button and offline status in the settings. */
+  renderApp() {
+    const box = this.appBox;
+    const status = pwa.standalone ? 'Аквариум открыт как приложение.'
+      : pwa.offlineReady ? 'Аквариум сохранён на устройстве и откроется даже без интернета.'
+      : 'После первого запуска аквариум будет открываться и без интернета.';
+    let action = '';
+    if (!pwa.standalone && pwa.canInstall) action = '<button class="wide">Установить как приложение</button>';
+    else if (!pwa.standalone && pwa.ios) action = '<div class="tip">Чтобы установить: «Поделиться» → «На экран „Домой“».</div>';
+    box.innerHTML = `<div class="tip">${status}</div>${action}`;
+    box.querySelector('button')?.addEventListener('click', async () => {
+      if (await pwa.install()) this.hint('Аквариум установлен — его можно открыть как отдельное приложение');
+    });
+  }
+
+  /** A small card in the top right corner; returns it so buttons can be wired up. */
+  notice(cls, html) {
+    const el = h('div', `notice ${cls}`, html);
+    el.addEventListener('pointerdown', (e) => e.stopPropagation());
+    el.close = () => { el.classList.remove('show'); setTimeout(() => el.remove(), 500); };
+    this.notices.appendChild(el);
+    requestAnimationFrame(() => el.classList.add('show'));
+    return el;
+  }
+
+  /** A new version has been downloaded: offer to switch to it (the world is saved on reload). */
+  offerUpdate(apply) {
+    if (this.notices.querySelector('.update')) return;
+    const el = this.notice('update', '<div class="n-row"><span>Есть новая версия аквариума</span><button>Обновить</button><button class="later">Позже</button></div>');
+    el.querySelector('button').addEventListener('click', () => { this.app.eco.save(); apply(); });
+    el.querySelector('.later').addEventListener('click', () => el.close());
+  }
+
+  /** The aquarium ended up on weak graphics: say so once per card, with a way to fix it. */
+  gpuNotice(v) {
+    const key = 'aq.gpuNotice', id = this.app.gpu.renderer;
+    try { if (localStorage.getItem(key) === id) return; } catch (e) { /* ignore */ }
+    this.gpuVerdict = v;
+    const el = this.notice('gpu' + (v.software ? ' warn' : ''), `<div class="n-title">${v.title}</div><div class="n-text">${v.text}</div>
+      <div class="n-row"><button>Как исправить</button><button class="later">Понятно</button></div>`);
+    const forget = () => { try { localStorage.setItem(key, id); } catch (e) { /* ignore */ } el.close(); };
+    el.querySelector('button').addEventListener('click', () => { forget(); this.showGpuHelp(); });
+    el.querySelector('.later').addEventListener('click', forget);
+  }
+
+  /** How to move the browser onto the stronger graphics card, for this system and browser. */
+  showGpuHelp() {
+    if (this.root.querySelector('.gpu-help')) return;
+    const v = this.gpuVerdict;
+    const help = switchHelp(v?.software);
+    const g = this.app.gpu;
+    const el = h('div', 'away gpu-help', `<div class="away-title">${v?.software ? 'Включить видеокарту' : 'Мощная видеокарта'}</div>
+      <div class="away-sub">сейчас рисует: ${g.name}${KIND_TITLE[g.kind] ? ` — ${KIND_TITLE[g.kind]}` : ''}</div>
+      <div class="gh-why">Сайт не может сам выбрать видеокарту — только попросить браузер. Если браузер остаётся на встроенной, его нужно переключить в настройках системы:</div>
+      <ol>${help.steps.map((t) => `<li>${t}</li>`).join('')}</ol>
+      ${help.extra.map((t) => `<div class="gh-extra">${t}</div>`).join('')}
+      <div class="away-actions"><button class="go">Понятно</button></div>`);
+    el.querySelector('.go').addEventListener('click', () => { el.classList.remove('in'); setTimeout(() => el.remove(), 500); });
+    el.addEventListener('pointerdown', (e) => e.stopPropagation());
+    this.root.appendChild(el);
+    requestAnimationFrame(() => el.classList.add('in'));
+  }
+
+  /** The quality preset changed outside the settings (lowered automatically to keep it smooth). */
+  qualityChanged(name, auto) {
+    const qs = this.panels.settings.querySelector('select[data-k="quality"]');
+    qs.value = name;
+    if (auto) this.hint(`Качество снижено до «${qs.options[qs.selectedIndex].text}», чтобы аквариум не тормозил`);
   }
 
   /** Settings that live in this UI's own store (volumes, look, day length, stories). */

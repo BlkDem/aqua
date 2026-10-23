@@ -155,6 +155,25 @@ body.immersive .exit-btn.show { opacity: 1; pointer-events: auto; }
 .hist.farewell { color: var(--muted); font-style: italic; }
 .settings .sect { margin: 12px 0 2px; font-size: 11px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); }
 .settings .set-body > .sect:first-child { margin-top: 2px; }
+.settings .app-box .tip { margin-top: 4px; }
+.settings button.wide { width: 100%; margin-top: 8px; padding: 8px; border-radius: 12px; border: 1px solid var(--edge); background: rgba(127, 227, 255, 0.14); cursor: pointer; font-weight: 800; }
+.settings button.wide:hover { background: rgba(127, 227, 255, 0.28); }
+.notices { position: absolute; right: 20px; top: 20px; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; max-width: min(380px, calc(100vw - 40px)); }
+.notice { padding: 10px 10px 10px 14px; border-radius: 14px; background: var(--glass); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); border: 1px solid var(--edge); font-size: 13px; pointer-events: auto; opacity: 0; transform: translateY(-8px); transition: all 0.4s ease; }
+.notice.show { opacity: 1; transform: none; }
+.notice:not(.show) { pointer-events: none; }
+.notice.warn { border-color: rgba(255, 138, 106, 0.6); }
+.notice .n-title { font-weight: 800; font-size: 14px; }
+.notice .n-text { color: var(--muted); line-height: 1.4; margin: 4px 0 8px; }
+.notice .n-row { display: flex; align-items: center; gap: 8px; }
+.notice button { padding: 6px 10px; border-radius: 10px; border: 1px solid var(--edge); background: rgba(127, 227, 255, 0.16); cursor: pointer; font-weight: 800; font-size: 12.5px; }
+.notice button.later { background: none; border-color: transparent; color: var(--muted); font-weight: 600; }
+.gpu-help { width: min(480px, calc(100vw - 32px)); max-height: calc(100vh - 40px); overflow-y: auto; }
+.gpu-help .gh-why { margin-top: 12px; font-size: 13.5px; line-height: 1.4; color: var(--muted); }
+.gpu-help ol { margin: 10px 0 12px; padding-left: 22px; display: flex; flex-direction: column; gap: 7px; font-size: 14px; line-height: 1.4; }
+.gpu-help .gh-extra { font-size: 12.5px; line-height: 1.4; color: var(--muted); margin-bottom: 8px; }
+.gpu-help code { font-family: ui-monospace, monospace; font-size: 12px; padding: 1px 5px; border-radius: 6px; background: rgba(127, 227, 255, 0.12); color: var(--text); user-select: all; word-break: break-all; }
+.settings .gpu-name b { color: var(--text); }
 .away { position: absolute; left: 50%; top: 50%; width: min(420px, calc(100vw - 32px)); transform: translate(-50%, -46%); padding: 22px 24px 18px; border-radius: 22px; pointer-events: auto;
   background: linear-gradient(160deg, rgba(30, 60, 80, 0.7), rgba(8, 18, 28, 0.72)); backdrop-filter: blur(18px) saturate(140%); -webkit-backdrop-filter: blur(18px) saturate(140%);
   border: 1px solid var(--edge); box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5); opacity: 0; transition: opacity 0.5s, transform 0.5s; }
@@ -167,3 +186,5 @@ body.immersive .exit-btn.show { opacity: 1; pointer-events: auto; }
 .away-actions { display: flex; gap: 8px; }
 .away-actions button { flex: 1; padding: 9px; border-radius: 12px; border: 1px solid var(--edge); background: rgba(127, 227, 255, 0.14); color: var(--text); cursor: pointer; font: inherit; font-weight: 800; }
 .away-actions button:hover { background: rgba(127, 227, 255, 0.28); }
+.gpu-help li { padding-left: 2px; }
+.gpu-help li::before { display: none; }
