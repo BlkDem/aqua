@@ -75,3 +75,9 @@ blender -b -P tools/blender/make_plants.py -- public/models/plants
 Запекание декора идёт в Cycles; если в системе есть GPU (OptiX/CUDA/HIP), он используется автоматически.
 
 Имена рыб и найденные секреты сохраняются в `localStorage`, поэтому характер и имя конкретной рыбки сохраняются между запусками.
+
+## Деплой
+
+Каждый пуш в `main` собирает сайт и выкладывает его на https://aqua.umolab.ru (GitHub Actions, `.github/workflows/deploy.yml`): `npm ci && npm run build`, затем `rsync` содержимого `dist/` в `/var/www/fastuser/data/www/aqua.umolab.ru` на `fp.cloud28.umolab.ru`. Запустить вручную можно на вкладке Actions → Deploy → Run workflow.
+
+Для доступа нужен секрет репозитория `DEPLOY_SSH_KEY` — приватный ключ деплоя. Его открытая часть лежит в `~user1/.ssh/authorized_keys` на сервере с ограничением `command="/usr/bin/rrsync …/aqua.umolab.ru",restrict`: этим ключом можно только синхронизировать файлы в каталог сайта, оболочки по нему нет.

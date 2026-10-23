@@ -1,0 +1,60 @@
+# Build the site and publish it to production (aqua.umolab.ru) on every push to main.
+#
+# Needs one repository secret, DEPLOY_SSH_KEY: the private key whose public half is in
+# user1's authorized_keys on the server, limited there to `rrsync` into the site directory
+# (so the key can only sync files into /var/www/fastuser/data/www/aqua.umolab.ru).
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  DEPLOY_HOST: fp.cloud28.umolab.ru
+  DEPLOY_USER: user1
+  # the server's host key, so the connection is verified rather than trusted blindly
+  DEPLOY_KNOWN_HOST: fp.cloud28.umolab.ru ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJQ6hyB82DkzAvctVL9RouICN0e2mbVXLuVQfb22TrJL
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://aqua.umolab.ru
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Build
+        run: |
+          npm ci
+          npm run build
+
+      - name: Upload to the server
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$DEPLOY_KNOWN_HOST" > ~/.ssh/known_hosts
+          # the key is locked to the site directory on the server, so the target is "./";
+          # files stay group-writable for the fastuser group that owns the site
+          rsync -az --delete --omit-dir-times --chmod=D2775,F664 \
+            -e "ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o BatchMode=yes" \
+            dist/ "$DEPLOY_USER@$DEPLOY_HOST:./"
+
+      - name: Check the site answers
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' https://aqua.umolab.ru/)
+          echo "HTTP $code"
+          test "$code" = 200
