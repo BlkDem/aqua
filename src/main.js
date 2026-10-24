@@ -70,7 +70,7 @@ controls.minDistance = 0.8;
 controls.maxDistance = 26;
 controls.maxPolarAngle = Math.PI * 0.62;
 controls.rotateSpeed = 0.6;
-controls.zoomSpeed = 0.8;
+controls.zoomSpeed = 2.5;   // about 12% nearer per notch of the wheel
 
 // ------------------------------------------------------------------ lights
 const sun = new THREE.DirectionalLight('#fff1db', 3.4);
