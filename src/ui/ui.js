@@ -344,7 +344,7 @@ export class UI {
         ${check('fps', 'Показывать FPS и видеокарту', fpsOn)}
         <div class="sect">Видеокарта</div>
         <div class="tip gpu-name"></div>
-        <label class="gpu-choice">Рисовать на <select data-k="gpuPref"><option value="high-performance">производительной видеокарте</option><option value="low-power">экономной видеокарте</option></select></label>
+        <label class="gpu-choice">Видеокарта <select data-k="gpuPref"><option value="default">Как решит браузер</option><option value="high-performance">Производительная</option><option value="low-power">Экономная</option></select></label>
         <div class="gpu-reload hidden"><button class="wide">Перезапустить аквариум</button></div>
         <button class="wide gpu-help-btn">Как переключить видеокарту</button>
       </div>
@@ -475,21 +475,17 @@ export class UI {
   }
 
   /**
-   * The cards the browser can draw on are known: the choice lists them by name. One card: no
-   * choice at all. Unknown (no WebGPU): the browser's own two wishes stay as they are.
+   * The cards the browser gives for each wish are known: name them in the choice (which is
+   * always there, whatever the browser reports).
    */
   gpuCardsFound(cards) {
-    const p = this.panels.settings;
-    const sel = p.querySelector('select[data-k="gpuPref"]');
     if (!cards) return;
-    if (cards.length === 1) {
-      p.querySelector('.gpu-choice').classList.add('hidden');
-      p.querySelector('.gpu-help-btn').classList.add('hidden');
-      return;
+    // the choice stays; each wish is labelled with the card the browser gives for it
+    const sel = this.panels.settings.querySelector('select[data-k="gpuPref"]');
+    for (const o of sel.options) {
+      const card = cards.find((c) => c.prefs.includes(o.value));
+      if (card) o.textContent = `${o.value === 'high-performance' ? 'Производительная' : 'Экономная'} — ${card.name}`;
     }
-    sel.innerHTML = cards.map((c) => `<option value="${c.prefs[0]}">${c.name}</option>`).join('');
-    const pref = gpuPref();
-    sel.value = (cards.find((c) => c.prefs.includes(pref)) || cards[0]).prefs[0];
   }
 
   /** Drawing without a card, or on another one than chosen: say so once per card, with a way to fix it. */

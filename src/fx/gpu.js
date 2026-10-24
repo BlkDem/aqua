@@ -1,13 +1,19 @@
 // Which graphics card draws the aquarium. A page cannot pick the GPU itself: it can only ask the
-// browser for its "high-performance" or "low-power" adapter. WebGPU tells which card stands
-// behind each, so the settings offer the cards by name; if the browser does not follow the
-// choice, the user is told how to switch it in the system.
+// browser for its "high-performance" or "low-power" adapter (or leave it to the browser). The
+// settings always offer the choice; where WebGPU tells which card stands behind each wish, the
+// card is named. If the browser does not follow the choice, the user is told how to switch it
+// in the system.
 
 export const GPU_PREF_KEY = 'aq.gpu';
 
-/** 'high-performance' (default) or 'low-power', as chosen in the settings. */
+export const GPU_PREFS = ['default', 'high-performance', 'low-power'];
+
+/** 'high-performance' (unless chosen otherwise), 'low-power' or 'default' (the browser decides). */
 export function gpuPref() {
-  try { return localStorage.getItem(GPU_PREF_KEY) === 'low-power' ? 'low-power' : 'high-performance'; } catch (e) { return 'high-performance'; }
+  try {
+    const v = localStorage.getItem(GPU_PREF_KEY);
+    return GPU_PREFS.includes(v) ? v : 'high-performance';
+  } catch (e) { return 'high-performance'; }
 }
 export function setGpuPref(v) {
   try { localStorage.setItem(GPU_PREF_KEY, v); } catch (e) { /* ignore */ }
