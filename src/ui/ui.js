@@ -3,7 +3,7 @@ import { SPECIES } from '../life/species.js';
 import { STAGE, RARE } from '../life/lifecycle.js';
 import { duration, fishWord } from '../life/words.js';
 import { pwa } from '../pwa.js';
-import { KIND_TITLE, gpuPref, setGpuPref, switchHelp } from '../fx/gpu.js';
+import { gpuPref, setGpuPref, switchHelp } from '../fx/gpu.js';
 
 const PREFS = 'aq.settings';
 const IDLE_MS = 3000;   // the pointer rests this long before the chrome hides
@@ -344,7 +344,7 @@ export class UI {
         ${check('fps', 'Показывать FPS и видеокарту', fpsOn)}
         <div class="sect">Видеокарта</div>
         <div class="tip gpu-name"></div>
-        <label>Предпочитать <select data-k="gpuPref"><option value="high-performance">Мощную (дискретную)</option><option value="low-power">Экономную (встроенную)</option></select></label>
+        <label class="gpu-choice">Рисовать на <select data-k="gpuPref"><option value="high-performance">производительной видеокарте</option><option value="low-power">экономной видеокарте</option></select></label>
         <div class="gpu-reload hidden"><button class="wide">Перезапустить аквариум</button></div>
         <button class="wide gpu-help-btn">Как переключить видеокарту</button>
       </div>
@@ -379,7 +379,7 @@ export class UI {
       sel.addEventListener('change', () => { F[k] = k === 'perDay' ? Number(sel.value) : sel.value; app.eco.save(); });
     }
     const g = app.gpu;
-    p.querySelector('.gpu-name').innerHTML = `Сейчас рисует: <b>${g.name}</b>${KIND_TITLE[g.kind] ? ` — ${KIND_TITLE[g.kind]}` : ''}`;
+    p.querySelector('.gpu-name').innerHTML = `Сейчас рисует: <b>${g.name}</b>`;
     const gs = p.querySelector('select[data-k="gpuPref"]');
     gs.value = gpuPref();
     gs.addEventListener('change', () => {
@@ -474,11 +474,29 @@ export class UI {
     el.querySelector('.later').addEventListener('click', () => el.close());
   }
 
-  /** The aquarium ended up on weak graphics: say so once per card, with a way to fix it. */
+  /**
+   * The cards the browser can draw on are known: the choice lists them by name. One card: no
+   * choice at all. Unknown (no WebGPU): the browser's own two wishes stay as they are.
+   */
+  gpuCardsFound(cards) {
+    const p = this.panels.settings;
+    const sel = p.querySelector('select[data-k="gpuPref"]');
+    if (!cards) return;
+    if (cards.length === 1) {
+      p.querySelector('.gpu-choice').classList.add('hidden');
+      p.querySelector('.gpu-help-btn').classList.add('hidden');
+      return;
+    }
+    sel.innerHTML = cards.map((c) => `<option value="${c.prefs[0]}">${c.name}</option>`).join('');
+    const pref = gpuPref();
+    sel.value = (cards.find((c) => c.prefs.includes(pref)) || cards[0]).prefs[0];
+  }
+
+  /** Drawing without a card, or on another one than chosen: say so once per card, with a way to fix it. */
   gpuNotice(v) {
-    const key = 'aq.gpuNotice', id = this.app.gpu.renderer;
+    const key = 'aq.gpuNotice', id = `${this.app.gpu.renderer}|${v.card || ''}`;
     try { if (localStorage.getItem(key) === id) return; } catch (e) { /* ignore */ }
-    this.gpuVerdict = v;
+    this.gpuIssue = v;
     const el = this.notice('gpu' + (v.software ? ' warn' : ''), `<div class="n-title">${v.title}</div><div class="n-text">${v.text}</div>
       <div class="n-row"><button>Как исправить</button><button class="later">Понятно</button></div>`);
     const forget = () => { try { localStorage.setItem(key, id); } catch (e) { /* ignore */ } el.close(); };
@@ -489,12 +507,15 @@ export class UI {
   /** How to move the browser onto the stronger graphics card, for this system and browser. */
   showGpuHelp() {
     if (this.root.querySelector('.gpu-help')) return;
-    const v = this.gpuVerdict;
-    const help = switchHelp(v?.software);
+    const v = this.gpuIssue;
+    const cards = this.app.gpuCards;
+    const sel = this.panels.settings.querySelector('select[data-k="gpuPref"]');
+    const card = v?.card || cards?.find((c) => c.prefs.includes(gpuPref()))?.name || (cards ? null : sel.options[sel.selectedIndex]?.text);
+    const help = switchHelp(v?.software, card);
     const g = this.app.gpu;
-    const el = h('div', 'away gpu-help', `<div class="away-title">${v?.software ? 'Включить видеокарту' : 'Мощная видеокарта'}</div>
-      <div class="away-sub">сейчас рисует: ${g.name}${KIND_TITLE[g.kind] ? ` — ${KIND_TITLE[g.kind]}` : ''}</div>
-      <div class="gh-why">Сайт не может сам выбрать видеокарту — только попросить браузер. Если браузер остаётся на встроенной, его нужно переключить в настройках системы:</div>
+    const el = h('div', 'away gpu-help', `<div class="away-title">${v?.software ? 'Включить видеокарту' : 'Выбор видеокарты'}</div>
+      <div class="away-sub">сейчас рисует: ${g.name}</div>
+      <div class="gh-why">Сайт не может сам выбрать видеокарту — только попросить браузер. Если браузер не слушается, его нужно переключить в настройках системы:</div>
       <ol>${help.steps.map((t) => `<li>${t}</li>`).join('')}</ol>
       ${help.extra.map((t) => `<div class="gh-extra">${t}</div>`).join('')}
       <div class="away-actions"><button class="go">Понятно</button></div>`);

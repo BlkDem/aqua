@@ -19,7 +19,7 @@ import { loadCritterAssets } from './life/critters.js';
 import { SPECIES } from './life/species.js';
 import { UI } from './ui/ui.js';
 import { startPwa } from './pwa.js';
-import { classifyGpu, gpuPref, probeAdapters, gpuVerdict } from './fx/gpu.js';
+import { describeGpu, gpuPref, listAdapters, gpuProblem } from './fx/gpu.js';
 
 // ------------------------------------------------------------------ renderer
 // the card is only a wish: browsers may ignore it (see fx/gpu.js for what we do about that)
@@ -36,9 +36,9 @@ renderer.toneMappingExposure = 1.0;
 const gl = renderer.getContext();
 const dbg = gl.getExtension('WEBGL_debug_renderer_info');
 const gpu = dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
-const gpuInfo = classifyGpu(gpu);
-const software = gpuInfo.kind === 'software';
-console.info('GPU:', gpu, '→', gpuInfo.kind);
+const gpuInfo = describeGpu(gpu);
+const software = gpuInfo.software;
+console.info('GPU:', gpu);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 document.getElementById('app').appendChild(renderer.domElement);
 
@@ -330,10 +330,11 @@ window.addEventListener('resize', onResize);
 // ------------------------------------------------------------------ loop
 const clock = new THREE.Clock();
 let frameNo = 0;
-// on first start the quality is chosen by the card (built-in graphics → low)
+// on first start: medium (low without a graphics card); the automatic resolution and, if need
+// be, a lower preset take care of slow machines
 let savedQ = null;
 try { savedQ = localStorage.getItem('aq.quality'); } catch (e) { /* ignore */ }
-app.setQuality(savedQ || (software || gpuInfo.kind === 'integrated' || gpuInfo.kind === 'mobile' ? 'low' : 'medium'));
+app.setQuality(savedQ || (software ? 'low' : 'medium'));
 ui.qualityChanged(app.quality.name);
 let first = true;
 // let the world run for a few seconds "off camera" so it is alive at first sight
@@ -480,14 +481,13 @@ function frame() {
     setTimeout(() => {
       document.getElementById('loader').classList.add('gone');
       startPwa();   // after the models have loaded, so they can be kept for offline use
-      // on built-in graphics, point out a stronger card (once per card, unless asked again)
-      if (gpuInfo.kind === 'integrated' || software || gpuInfo.kind === 'unknown') {
-        probeAdapters().then((probe) => {
-          app.gpuProbe = probe;
-          const v = gpuVerdict(gpuInfo, probe);
-          if (v) ui.gpuNotice(v);
-        });
-      }
+      // the cards the browser can draw on, for the settings; a word if it ignores the choice
+      listAdapters().then((cards) => {
+        app.gpuCards = cards;
+        ui.gpuCardsFound(cards);
+        const v = gpuProblem(gpuInfo, cards, gpuPref());
+        if (v) ui.gpuNotice(v);
+      });
       if (away) setTimeout(() => ui.showAway(away), 900);
       else setTimeout(() => ui.hint('Кликните по стеклу, наведите на рыбку или нажмите «Кормить»'), 1800);
     }, 300);
