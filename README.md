@@ -70,6 +70,7 @@ tools/blender/
   make_critters.py     краб и улитки        → public/models/critters (части-суставы, общий запечённый атлас)
 tools/import_fish.py   готовая модель рыбы (один меш с текстурой, например из Tripo) → public/models/fish
 tools/import_crab.py   готовая модель краба → public/models/critters/crab.glb, разрезанная на суставы (ноги, клешни, глаза)
+tools/import_critter.py готовые улитки и креветка, разрезанные на части (раковина, щупальца; сегменты брюшка, ноги, усы)
 tools/fin_map.py       размечает плавники готовой модели (тип и расстояние от основания), чтобы шейдер двигал каждый плавник по-своему
 ```
 
@@ -103,6 +104,9 @@ python3 tools/import_fish.py "colorful fish 3d model.glb" guppy --peduncle 0.613
 
 ```bash
 python3 tools/import_crab.py "crab 3d model.glb"
+python3 tools/import_critter.py snail-mystery 47f4c938fbe39cd68c779bede3581c77.glb
+python3 tools/import_critter.py snail-ramshorn "snail 3d model.glb"
+python3 tools/import_critter.py shrimp 449d2b8e561a3b6fc2591e9c8cd8443d.glb --out <unity>/Assets/Aquarium/Models/Critters/shrimp.glb --skins <unity>/Assets/Aquarium/Art/Textures/Critters/shrimp/skins
 ```
 
 Запекание декора идёт в Cycles; если в системе есть GPU (OptiX/CUDA/HIP), он используется автоматически.

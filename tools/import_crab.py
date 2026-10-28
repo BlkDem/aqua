@@ -233,7 +233,7 @@ def main():
     print(f"wrote {a.out}: {os.path.getsize(a.out) // 1024} KB")
 
 
-def write(path, names, parent, joint, meshes, tex):
+def write(path, names, parent, joint, meshes, tex, material="crab", image_prefix="crab"):
     chunks, views, accessors = [], [], []
 
     def add(data, target=None):
@@ -265,12 +265,12 @@ def write(path, names, parent, joint, meshes, tex):
         nodes[index[parent[n]]].setdefault("children", []).append(index[n])
 
     images, texs = [], []
-    for name, data in zip(("crab_base", "crab_normal", "crab_rm"), tex):
+    for name, data in zip((f"{image_prefix}_base", f"{image_prefix}_normal", f"{image_prefix}_rm"), tex):
         if data:
             images.append({"name": name, "bufferView": add(data), "mimeType": "image/jpeg"})
             texs.append({"sampler": 0, "source": len(images) - 1})
     pbr = {"baseColorTexture": {"index": 0}, "metallicFactor": 0.0, "roughnessFactor": 1.0}
-    material = {"name": "crab", "pbrMetallicRoughness": pbr}
+    material = {"name": material, "pbrMetallicRoughness": pbr}
     k = 1
     if tex[1]:
         material["normalTexture"] = {"index": k}
