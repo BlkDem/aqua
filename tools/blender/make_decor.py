@@ -1424,6 +1424,204 @@ def hull_mesh(name, nl=40, nh=14, broken=True):
     return from_bmesh(name, bm)
 
 
+# ----------------------------------------------------------------------------- ship's cloth and weed
+def _cloth_uv(t, layer):
+    u, v, _ = t.sep(t.n("ShaderNodeUVMap", uv_map=layer).outputs["UV"])
+    return u, v
+
+
+def mat_sail(name):
+    """Old sailcloth, laid out by the cloth's own (u along the yard, v down) "Cloth" UV and its "Hem" UV
+    (x: 1 at a torn edge or a hole): panels sewn side by side, a row of reef points, a patch, stains and
+    tide marks, algae creeping in from the torn hem, which is frayed darker."""
+    t = NT(name)
+    u, v = _cloth_uv(t, "Cloth")
+    hem, _ = _cloth_uv(t, "Hem")
+    weave = t.noise(t.vec(), 260, detail=2)
+    stains = t.noise(t.vec(), 5, detail=6, distortion=0.8)
+    col = t.ramp(t.math("ADD", t.math("MULTIPLY", stains, 0.85), t.math("MULTIPLY", weave, 0.15)),
+                 [(0.3, C("#8e7f60")), (0.55, C("#c9bc98")), (0.75, C("#ddd2b4"))])
+    # tide marks: faint wavy bands where the cloth dried and soaked again
+    tide = t.math("SINE", t.math("ADD", t.math("MULTIPLY", v, 26.0), t.math("MULTIPLY", stains, 5.0)))
+    col = t.mix(t.ramp(tide, [(0.85, 0.0), (1.0, 0.25)]), col, C("#7c6c4e"))
+    # panels sewn side by side: a double seam every seventh of the width
+    seam = t.ramp(t.math("FRACT", t.math("MULTIPLY", u, 7.0)), [(0.0, 1.0), (0.025, 0.0), (0.975, 0.0), (1.0, 1.0)])
+    col = t.mix(t.math("MULTIPLY", seam, 0.6), col, C("#6d5f43"))
+    # reef points: a row of little rope ends across the upper part
+    du = t.math("SUBTRACT", t.math("FRACT", t.math("MULTIPLY", u, 22.0)), 0.5)
+    dv = t.math("MULTIPLY", t.math("SUBTRACT", v, 0.16), 22.0)
+    r2 = t.math("ADD", t.math("MULTIPLY", du, du), t.math("MULTIPLY", dv, dv))
+    col = t.mix(t.math("LESS_THAN", r2, 0.04), col, C("#4a3b26"))
+    # a patch sewn over an old tear, with its stitched border
+    inside = t.math("MULTIPLY", t.math("MULTIPLY", t.math("GREATER_THAN", u, 0.42), t.math("LESS_THAN", u, 0.55)),
+                    t.math("MULTIPLY", t.math("GREATER_THAN", v, 0.17), t.math("LESS_THAN", v, 0.29)))
+    inner = t.math("MULTIPLY", t.math("MULTIPLY", t.math("GREATER_THAN", u, 0.43), t.math("LESS_THAN", u, 0.54)),
+                   t.math("MULTIPLY", t.math("GREATER_THAN", v, 0.18), t.math("LESS_THAN", v, 0.28)))
+    col = t.mix(inside, col, t.mix(stains, C("#a59874"), C("#b9a77c")))
+    col = t.mix(t.math("SUBTRACT", inside, inner), col, C("#5a4a32"))
+    # algae and a dark fray along the torn hem and round the holes
+    mcol = t.ramp(t.noise(t.vec(), 40, detail=6), [(0.3, C("#33461c")), (0.7, C("#6a7f2f"))])
+    algae = t.ramp(t.math("ADD", hem, t.math("MULTIPLY", t.math("SUBTRACT", stains, 0.5), 0.5)), [(0.45, 0.0), (0.8, 0.85)])
+    col = t.mix(algae, col, mcol)
+    col = t.mix(t.ramp(hem, [(0.85, 0.0), (1.0, 0.7)]), col, C("#3b2f1f"))
+    return t.finish(col, rough=0.92, normal=t.bump(t.math("ADD", t.math("MULTIPLY", weave, 0.4), seam), 0.35, 0.01))
+
+
+def mat_weed(name, root="#3b3a1c", tip="#7c9a3a"):
+    """Weed ribbon: darker towards where it is fixed, light and yellowish at the tip, with fine veins."""
+    t = NT(name)
+    _, v = _cloth_uv(t, "Cloth")
+    vein = t.noise(t.vec(scale=(1, 1, 0.2)), 60, detail=3)
+    col = t.ramp(t.math("ADD", v, t.math("MULTIPLY", t.math("SUBTRACT", vein, 0.5), 0.3)), [(0.0, C(root)), (0.7, C(tip)), (1.0, C("#a8a854"))])
+    return t.finish(col, rough=0.7, normal=t.bump(vein, 0.3, 0.005))
+
+
+def mat_pennant(name):
+    """A faded red pennant with two pale stripes near the hoist, stained and bleached."""
+    t = NT(name)
+    u, v = _cloth_uv(t, "Cloth")
+    stains = t.noise(t.vec(), 7, detail=5)
+    stripe = t.math("MULTIPLY", t.math("GREATER_THAN", u, 0.1), t.math("LESS_THAN", u, 0.2))
+    stripe = t.math("MAXIMUM", stripe, t.math("MULTIPLY", t.math("GREATER_THAN", u, 0.26), t.math("LESS_THAN", u, 0.3)))
+    col = t.mix(stripe, t.ramp(stains, [(0.3, C("#5e1f18")), (0.7, C("#a3402e"))]), C("#cdbb93"))
+    col = t.mix(t.ramp(u, [(0.6, 0.0), (1.0, 0.5)]), col, C("#3a3018"))
+    return t.finish(col, rough=0.85)
+
+
+def cloth_grid(name, point, nu, nv, keep, hem):
+    """A sheet of cloth from point(u, v) on a grid, keeping the quads where keep(u, v); UV layers "Cloth" (u, v)
+    and "Hem" (hem(u, v), 0) for the material."""
+    bm = bmesh.new()
+    cl, hl = bm.loops.layers.uv.new("Cloth"), bm.loops.layers.uv.new("Hem")
+    verts = {}
+
+    def vert(i, j):
+        if (i, j) not in verts:
+            verts[i, j] = bm.verts.new(point(i / nu, j / nv))
+        return verts[i, j]
+    for i in range(nu):
+        for j in range(nv):
+            uc, vc = (i + 0.5) / nu, (j + 0.5) / nv
+            if not keep(uc, vc):
+                continue
+            f = bm.faces.new((vert(i, j), vert(i + 1, j), vert(i + 1, j + 1), vert(i, j + 1)))
+            for loop, (a, b) in zip(f.loops, ((i, j), (i + 1, j), (i + 1, j + 1), (i, j + 1))):
+                loop[cl].uv = (a / nu, b / nv)
+                loop[hl].uv = (hem(a / nu, b / nv), 0)
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+    return from_bmesh(name, bm)
+
+
+def torn_sail(name, a, b, length, mat, seed=7):
+    """A square sail hanging from a yard between a and b: tied on at four points (sagging between), bellied
+    a little by the current, in long folds that deepen downwards; one lower corner torn away, a ragged hem,
+    two holes and a few strips hanging below the tear. Origin at its highest point on the yard."""
+    rng = random.Random(seed)
+    along = (b - a)
+    down = Vector((0.04, -0.12, -1)).normalized()
+    out = along.cross(down).normalized()
+    if out.y > 0:
+        out = -out   # bellies towards the front glass
+    ph = [rng.uniform(0, TAU) for _ in range(4)]
+
+    def hem_len(u):   # how far down the cloth reaches: one lower corner gone, a ragged edge
+        tear = 0.45 * max(0.0, min(1.0, (u - 0.55) / 0.4)) ** 1.5
+        rag = 0.05 * math.sin(u * 41 + ph[0]) + 0.035 * math.sin(u * 97 + ph[1]) + 0.02 * math.sin(u * 173)
+        return length * (1 - tear) + rag
+    holes = [(0.3, 0.55, 0.085), (0.72, 0.33, 0.06)]
+    strips = [(0.6, 0.035, 0.28), (0.76, 0.03, 0.38), (0.9, 0.025, 0.24)]
+
+    def edge_dist(u, v):
+        d = (hem_len(u) - v * length * 1.5) / length
+        for hu, hv, hr in holes:
+            ang = math.atan2(v * 1.5 - hv, (u - hu) * 1.3)
+            rim = hr * (1 + 0.25 * math.sin(ang * 5 + hu * 9) + 0.12 * math.sin(ang * 13 + hv * 7))   # ragged, not round
+            d = min(d, (math.hypot((u - hu) * 1.3, v * 1.5 - hv) - rim) * 1.2)
+        return d
+
+    def keep(u, v):
+        if edge_dist(u, v) > 0:
+            return True
+        vv = v * length * 1.5
+        return any(abs(u - su - 0.01 * math.sin(vv * 30)) < w / 2 and vv < hem_len(su) + sl * (1 - abs(u - su) / w)
+                   for su, w, sl in strips)
+
+    def hem(u, v):
+        return max(0.0, 1 - max(edge_dist(u, v), 0) / 0.12)
+
+    def point(u, v):
+        vv = v * length * 1.5
+        top = a.lerp(b, 0.05 + 0.9 * u)
+        sag = 0.04 * math.sin(math.pi * ((u * 3) % 1.0))           # between the four ties
+        belly = 0.2 * math.sin(math.pi * u) * math.sin(math.pi * min(vv / length, 1) * 0.85)
+        # long folds hanging from the ties, wandering a little on the way down; finer creases between
+        folds = (0.05 * math.sin(TAU * (3 * u + 0.3 * math.sin(vv * 2.2 + ph[2]))) + 0.018 * math.sin(TAU * 9 * u + vv * 3 + ph[3])) * (0.3 + vv / length)
+        # gathered where it is tied on
+        tie = 0.02 * math.exp(-(((u * 3) % 1.0) - 0.5) ** 2 * 60) * max(0, 1 - vv * 4)
+        return top + down * (vv + sag) + out * (belly + folds + tie)
+    ob = cloth_grid(name, point, 96, 110, keep, hem)
+    ob.data.materials.append(mat)
+    top = max((v.co for v in ob.data.vertices), key=lambda c: c.z)
+    set_origin(ob, top)
+    return ob
+
+
+def weed_strand(name, root, length, width, seed, mat, hang=True):
+    """A strand of weed: a crinkled, twisting ribbon with a midrib, hanging from `root` (or growing up from
+    it), drifting a little; origin at the root, where it is fixed. "Cloth" UV: v from the root to the tip."""
+    rng = random.Random(seed)
+    n = max(8, int(length / 0.025))
+    up = -1 if hang else 1
+    a0, ph = rng.uniform(0, TAU), rng.uniform(0, TAU)
+    bm = bmesh.new()
+    cl = bm.loops.layers.uv.new("Cloth")
+    rows = []
+    for i in range(n + 1):
+        s = i / n
+        drift = Vector((0.06 * s * math.sin(s * 6 + ph) + 0.05 * s * s, 0.05 * s * math.cos(s * 4.5 + ph * 1.3), 0))
+        c = Vector(root) + Vector((0, 0, up * s * length)) + drift
+        a = a0 + s * 2.2
+        side = Vector((math.cos(a), math.sin(a), 0))
+        nrm = Vector((-math.sin(a), math.cos(a), 0))
+        w = width * (0.45 + 0.55 * math.sin(math.pi * min(1.0, 0.15 + s * 0.95))) * (0.85 + 0.15 * math.sin(s * 23 + ph))
+        crinkle = nrm * (0.006 * math.sin(s * 47 + ph))
+        rows.append([bm.verts.new(c - side * w / 2 + crinkle), bm.verts.new(c + nrm * 0.005), bm.verts.new(c + side * w / 2 - crinkle)])
+    for i in range(n):
+        for k in range(2):
+            f = bm.faces.new((rows[i][k], rows[i][k + 1], rows[i + 1][k + 1], rows[i + 1][k]))
+            for loop, uv in zip(f.loops, ((k / 2, i / n), ((k + 1) / 2, i / n), ((k + 1) / 2, (i + 1) / n), (k / 2, (i + 1) / n))):
+                loop[cl].uv = uv
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+    ob = from_bmesh(name, bm)
+    ob.data.materials.append(mat)
+    set_origin(ob, root)
+    return ob
+
+
+def pennant(name, at, length, width, mat):
+    """A long pennant hanging from the mast head and streaming in the current, its fly end forked and torn;
+    origin at the hoist."""
+    flow = Vector((0.55, 0.12, -0.83)).normalized()
+    side = Vector((0, 0, 1)).cross(flow).normalized()
+    if side.length < 0.1:
+        side = Vector((0, 1, 0))
+    hoist = side.cross(flow).normalized()
+
+    def point(u, v):   # u along the fly, v across the hoist
+        w = width * (1 - 0.75 * u)
+        wave = 0.04 * math.sin(u * 9 + v * 1.5) * u
+        return Vector(at) + flow * (u * length) + hoist * ((v - 0.5) * w) + side * wave
+
+    def keep(u, v):
+        fork = u > 0.8 and abs(v - 0.5) < 0.18 * (u - 0.8) / 0.2
+        return not fork and u < 0.97 - 0.05 * math.sin(v * 31)
+    ob = cloth_grid(name, point, 30, 6, keep, lambda u, v: 0.0)
+    ob.data.materials.append(mat)
+    top = max((v.co for v in ob.data.vertices), key=lambda c: c.z)
+    set_origin(ob, top)
+    return ob
+
+
 def build_ship():
     """Wooden shipwreck lying half-buried: planked hull with a torn side and ribs showing,
     broken deck, snapped mast with a yard, a torn sail (sway), anchor and portholes."""
@@ -1470,10 +1668,12 @@ def build_ship():
     mast = bpy.context.active_object
     mast.data.materials.append(dark)
     parts.append(mast)
-    bpy.ops.mesh.primitive_cylinder_add(vertices=12, radius=0.035, depth=1.5, location=(-1.05, 0.05, 1.85), rotation=(0.3, 1.45, 0))
+    bpy.ops.mesh.primitive_cylinder_add(vertices=12, radius=0.042, depth=1.5, location=(-1.05, 0.05, 1.85), rotation=(0.3, 1.45, 0))
     yard = bpy.context.active_object
     yard.data.materials.append(dark)
     parts.append(yard)
+    yard_a, yard_b = yard.matrix_world @ Vector((0, 0, -0.75)), yard.matrix_world @ Vector((0, 0, 0.75))
+    ydir = (yard_b - yard_a).normalized()
     # portholes (brass rings) along the intact side
     for i in range(4):
         x = -1.3 + i * 0.55
@@ -1538,32 +1738,140 @@ def build_ship():
     anchor.location = (1.9, -0.75, -0.25)
     anchor.rotation_euler = (0.4, 1.1, 0.3)
     parts.append(anchor)
+    # --- what makes it a ship that sailed: bulwarks along the deck (broken in places), the helm on the stern
+    # deck, shrouds with ratlines up to the mast, cargo left on deck, gun ports, barnacles on the hull
+    rng = random.Random(11)
+    for side in (-1, 1):
+        x = -1.22
+        while x < 1.75:
+            w, _, sheer = hull_section(x)
+            in_hole = side < 0 and -0.45 < x < 0.62
+            if not in_hole and rng.random() > 0.12:
+                parts.append(part("cube", dark, loc=(x, side * (w - 0.025), sheer + 0.07), scale=(0.035, 0.03, 0.15)))
+                nx = x + 0.27
+                w2, _, sh2 = hull_section(nx)
+                if rng.random() > 0.3 and not (side < 0 and -0.45 < nx < 0.62):
+                    a_, b_ = Vector((x, side * (w - 0.025), sheer + 0.15)), Vector((nx, side * (w2 - 0.025), sh2 + 0.15))
+                    if rng.random() < 0.25:   # snapped rail hanging down
+                        b_ = a_.lerp(b_, 0.6) + Vector((0, 0, -0.12))
+                    mid = (a_ + b_) / 2
+                    parts.append(part("cylinder", dark, loc=mid, rot=Vector((0, 0, 1)).rotation_difference(b_ - a_).to_euler(),
+                                      radius=0.018, depth=(b_ - a_).length, vertices=8))
+            x += 0.27
+    # the helm: a spoked wheel on a post at the front of the stern deck
+    wx, wz = sx1 - 0.14, 0.42 + 0.24
+    parts.append(part("cube", dark, loc=(wx - 0.06, 0, 0.42 + 0.13), scale=(0.07, 0.11, 0.26), bevel=0.01))
+    parts.append(part("torus", dark, loc=(wx, 0, wz), rot=(0, math.pi / 2, 0), major_radius=0.15, minor_radius=0.014, major_segments=32, minor_segments=6))
+    parts.append(part("cylinder", brass, loc=(wx, 0, wz), rot=(0, math.pi / 2, 0), radius=0.032, depth=0.06, vertices=12))
+    for k in range(8):
+        a = k * TAU / 8 + 0.2
+        d = Vector((0, math.cos(a), math.sin(a)))
+        parts.append(part("cylinder", dark, loc=Vector((wx, 0, wz)) + d * 0.09, rot=Vector((0, 0, 1)).rotation_difference(d).to_euler(),
+                          radius=0.008, depth=0.2, vertices=6))
+        parts.append(part("cylinder", dark, loc=Vector((wx, 0, wz)) + d * 0.2, rot=Vector((0, 0, 1)).rotation_difference(d).to_euler(),
+                          radius=0.012, depth=0.06, vertices=6))
+    # shrouds from the mast down to both sides, with ratlines across them
+    mbot, mtop = Vector((-1.16, 0, -0.08)), Vector((-0.34, 0, 2.18))
+    mhead = mbot.lerp(mtop, 0.72)
+    lines = []
+    for side in (-1, 1):
+        feet = [Vector((x, side * (hull_section(x)[0] - 0.02), hull_section(x)[2] + 0.02)) for x in (-1.3, -1.02, -0.74)]
+        for f in feet:
+            lines.append([(mhead, 0.007), (mhead.lerp(f, 0.5) + Vector((0, 0, -0.02)), 0.007), (f, 0.007)])
+        for k in range(1, 9):
+            t_ = k / 9
+            pts = [mhead.lerp(f, t_) for f in feet]
+            if t_ > 0.15:
+                lines.append([(pts[0], 0.005), (pts[1] + Vector((0, 0, -0.008)), 0.005), (pts[2], 0.005)])
+    shrouds = tube_curve("Shrouds", lines, res=4, bevel_res=1)
+    shrouds.data.materials.append(rope)
+    parts.append(shrouds)
+    # rope ties holding the sail to the yard
+    for k in range(4):
+        c = yard_a.lerp(yard_b, 0.05 + 0.9 * k / 3)
+        parts.append(part("torus", rope, loc=c, rot=Vector((0, 0, 1)).rotation_difference(ydir).to_euler(), major_radius=0.05, minor_radius=0.011,
+                          major_segments=12, minor_segments=5))
+    # cargo left on deck: a barrel standing, one on its side, a crate
+    hoop = mat_metal("Hoop", base="#4b4640", patina="#6e3b1e", patina_amt=0.8, rough=0.7)
+    staves = mat_wood("Staves", base="#6a4a2c", dark="#2e1f12", light="#8c6a44", rings=10, along="Z", staves=14, moss=0.25)
+    for loc, rot in (((0.9, 0.34, 0.05), (0, 0, 0)), ((1.25, -0.22, 0.03), (math.pi / 2, 0, 0.7))):
+        parts.append(part("cylinder", staves, loc=loc, rot=rot, radius=0.085, depth=0.22, vertices=16, bevel=0.01))
+        for dz in (-0.07, 0.07):
+            off = Matrix.Rotation(rot[2], 4, "Z") @ Matrix.Rotation(rot[0], 4, "X") @ Vector((0, 0, dz))
+            parts.append(part("torus", hoop, loc=Vector(loc) + off, rot=rot, major_radius=0.087, minor_radius=0.008, major_segments=20, minor_segments=4))
+    crate = mat_wood("Crate", base="#7a5a38", dark="#3a2716", light="#a07a50", rings=9, along="XY", planks=4, seam_axis="Z", moss=0.3)
+    parts.append(part("cube", crate, loc=(-0.95, 0.38, 0.04), rot=(0.08, -0.1, 0.4), scale=(0.2, 0.18, 0.17), bevel=0.012))
+    # gun ports with the muzzles showing, on the side towards the glass
+    for x in (-1.05, 1.05, 1.4):
+        w, keel, sheer = hull_section(x)
+        a = -1.2
+        y, z = math.sin(a) * w, keel * math.cos(a) ** 0.8 + sheer * abs(math.sin(a)) + 0.06
+        parts.append(part("cube", dark, loc=(x, y - 0.015, z), scale=(0.17, 0.03, 0.13), bevel=0.008))
+        parts.append(part("cube", glass, loc=(x, y - 0.03, z), scale=(0.12, 0.01, 0.09)))
+        parts.append(part("cylinder", iron, loc=(x, y - 0.06, z), rot=(math.pi / 2, 0, 0), radius=0.035, depth=0.09, vertices=12))
+    # barnacles in colonies on the hull, mostly low where the water stood longest
+    shell = mat_plain("Barnacle", "#c9c2ae", rough=0.9)
+    for c in range(9):
+        cx, ca = rng.uniform(-1.6, 1.7), rng.choice((-1, 1)) * rng.uniform(0.7, 1.3)
+        for k in range(rng.randint(6, 12)):
+            x = cx + rng.gauss(0, 0.08)
+            a = ca + rng.gauss(0, 0.1)
+            w, keel, sheer = hull_section(x)
+            pos = Vector((x, math.sin(a) * w, keel * abs(math.cos(a)) ** 0.8 + sheer * abs(math.sin(a))))
+            if pos.z < -0.5 or (pos.y < -0.25 and -0.35 < x < 0.55):
+                continue
+            nrm = Vector((0, math.sin(a), -math.cos(a) * 0.8)).normalized()
+            r = rng.uniform(0.012, 0.028)
+            parts.append(part("cone", shell, loc=pos + nrm * r * 0.4, rot=Vector((0, 0, 1)).rotation_difference(nrm).to_euler(),
+                              radius1=r, radius2=r * 0.45, depth=r * 1.1, vertices=8))
+    # the stern lantern: a caged lamp hanging from an iron bracket over the transom
+    lx = sx0 - 0.17
+    bracket = tube_curve("Bracket", [[(Vector((sx0 - 0.005, 0, 0.5)), 0.013), (Vector((sx0 - 0.09, 0, 0.62)), 0.012), (Vector((lx + 0.03, 0, 0.95)), 0.011),
+                                      (Vector((lx, 0, 0.96)), 0.01), (Vector((lx, 0, 0.9)), 0.009)]], res=6, bevel_res=2)
+    bracket.data.materials.append(iron)
+    parts.append(bracket)
+    parts.append(part("torus", iron, loc=(lx, 0, 0.885), rot=(math.pi / 2, 0, 0), major_radius=0.018, minor_radius=0.005, major_segments=12, minor_segments=4))
+    parts.append(part("cone", brass, loc=(lx, 0, 0.835), radius1=0.068, radius2=0.012, depth=0.07, vertices=6))
+    parts.append(part("cylinder", brass, loc=(lx, 0, 0.8), radius=0.062, depth=0.014, vertices=6))
+    parts.append(part("cylinder", brass, loc=(lx, 0, 0.665), radius=0.058, depth=0.026, vertices=6))
+    parts.append(part("cone", brass, loc=(lx, 0, 0.64), radius1=0.02, radius2=0.05, depth=0.03, vertices=6))
+    for k in range(6):
+        a = k * TAU / 6
+        parts.append(part("cylinder", iron, loc=(lx + math.cos(a) * 0.056, math.sin(a) * 0.056, 0.733), radius=0.006, depth=0.13, vertices=5))
     for p in parts:
         apply_all(p)
         transform_apply(p)
     ship = join("Ship", parts)
     shade_smooth(ship, 40)
     bake(ship, 2048)
-    # torn sail hanging from the yard
-    bm = bmesh.new()
-    bmesh.ops.create_grid(bm, x_segments=12, y_segments=12, size=0.5)
-    for v in bm.verts:
-        x, y = v.co.x * 1.6, v.co.y * 1.4
-        z = math.sin(x * 3) * 0.1 + math.sin(y * 4) * 0.05
-        if y < -0.2 and (x > 0.2 or math.sin(x * 20) > 0.6):
-            y = -0.2 + math.sin(x * 25) * 0.08
-        v.co = Vector((x, z, y))
-    sail = from_bmesh("SwaySail", bm)
-    sail.location = (-1.0, 0.03, 1.4)
-    sail.rotation_euler = (0, 0.32, 0)
-    sail.data.materials.append(mat_plain("SailCloth", "#cfc2a2", rough=0.9))
-    transform_apply(sail)
-    set_origin(sail, (-1.0, 0.03, 0.95))
+    # the torn sail hanging from the yard, swaying in the current
+    sail = torn_sail("SwaySail", yard_a + Vector((0, 0, -0.035)), yard_b + Vector((0, 0, -0.035)), 0.95, mat_sail("SailCloth"))
+    bake(sail, 1024)
+    living = [sail]
+    # a faded pennant from the mast head, weed hanging from the yard, the rail and the bowsprit, and a few
+    # strands growing up from the deck
+    flag = pennant("SwayPennant", mtop + Vector((0.01, 0, -0.06)), 0.55, 0.13, mat_pennant("PennantCloth"))
+    bake(flag, 256)
+    living.append(flag)
+    weed = mat_weed("Weed")
+    hangs = [(yard_a.lerp(yard_b, 0.12) + Vector((0, 0.03, -0.04)), 0.5, 0.05), (yard_a.lerp(yard_b, 0.82) + Vector((0, 0.03, -0.04)), 0.34, 0.04),
+             (bow + bdir * 0.32 + Vector((0, 0, -0.03)), 0.42, 0.045)]
+    for x, ln in ((0.85, 0.26), (1.3, 0.32), (-0.95, 0.22), (1.6, 0.2)):
+        w, _, sheer = hull_section(x)
+        hangs.append((Vector((x, -(w + 0.01), sheer + 0.14)), ln, 0.035))
+    for k, (root, ln, wd) in enumerate(hangs):
+        st = weed_strand(f"SwayWeed{k}", root, ln, wd, 30 + k, weed)
+        bake(st, 256)
+        living.append(st)
+    for k, (root, ln) in enumerate((((0.55, 0.3, -0.04), 0.75), ((0.62, 0.22, -0.04), 0.55), ((-0.35, -0.28, -0.04), 0.9))):
+        st = weed_strand(f"SwayKelp{k}", Vector(root), ln, 0.06, 60 + k, weed, hang=False)
+        bake(st, 256)
+        living.append(st)
     # stern lantern on its bracket
     lam = mat_plain("GlowShipLantern", "#ffd28a", rough=0.2, emission=("#ffb04a", 1.0))
-    lantern = part("cylinder", lam, loc=(-2.0, 0, 0.72), radius=0.045, depth=0.1, vertices=6)
+    lantern = part("cylinder", lam, loc=(lx, 0, 0.733), radius=0.048, depth=0.12, vertices=6)
     lantern.name = "GlowLantern"
-    export("ship", [ship, sail, lantern])
+    export("ship", [ship, lantern] + living)
 
 
 def build_wreckage():
