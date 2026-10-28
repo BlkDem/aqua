@@ -2,14 +2,15 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
 // Fish models generated in Blender (tools/blender/make_fish.py) or brought in ready-made
-// (tools/import_fish.py: a lone Body with the eyes and fins painted on, no Fins/Pect/Eye parts).
+// (tools/import_fish.py: a lone Body with the eyes and fins painted on, no Fins/Pect/Eye parts;
+// tools/fin_map.py marks its fins in uv1).
 // Species without a model fall back to the procedural builder.
 export const ASSETS = {};
 
 function bakedGeometry(mesh) {
   const g = mesh.geometry.clone();
   g.applyMatrix4(mesh.matrixWorld);
-  for (const name of Object.keys(g.attributes)) if (!['position', 'normal', 'uv'].includes(name)) g.deleteAttribute(name);
+  for (const name of Object.keys(g.attributes)) if (!['position', 'normal', 'uv', 'uv1'].includes(name)) g.deleteAttribute(name);
   return g;
 }
 

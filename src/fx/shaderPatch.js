@@ -36,13 +36,16 @@ vec3 causticRGB(vec2 uv, float t){
  * opts.wag: {value: Vector4(phase, amplitude, bend, length)} — fish body undulation
  *   (opts.instanced: wag and pect come from the per-instance attributes iWag / iPect instead)
  * opts.glow: {value: float} extra fresnel-ish rim glow (night creatures)
+ * opts.solidFins: the solid fins of a sculpted model move on their own (aFin from tools/fin_map.py,
+ *   per instance iFinA = (fin phase, dorsal/anal erect, fin activity, tail spread),
+ *   iFinB = (left and right pectoral extra angle, pelvic spread, pelvic beat phase))
  */
 export function patchMaterial(mat, opts = {}) {
   const caustics = opts.caustics ?? 1;
   const sway = opts.sway ?? 0;
   const wag = opts.wag;
   const inst = !!opts.instanced;
-  const key = `aq-${caustics > 0}-${sway > 0}-${!!wag}-${!!opts.glow}-${!!opts.pect}-${inst}`;
+  const key = `aq-${caustics > 0}-${sway > 0}-${!!wag}-${!!opts.glow}-${!!opts.pect}-${inst}-${!!opts.solidFins}`;
   mat.onBeforeCompile = (sh) => {
     sh.uniforms.uTime = G.uTime;
     sh.uniforms.uCaustic = G.uCaustic;
@@ -60,6 +63,7 @@ uniform float uTime; uniform vec2 uCurrent; uniform vec4 uFish[16]; uniform floa
 varying vec3 vCWorld; varying vec3 vCNorm;
 ${wag ? (inst ? 'attribute vec4 iWag;\n#define uWag iWag' : 'uniform vec4 uWag;') : ''}
 ${opts.pect ? (inst ? 'attribute float iPect;\n#define uPect iPect\nattribute vec4 aPect;' : 'uniform float uPect; attribute vec4 aPect;') : ''}
+${opts.solidFins ? 'attribute vec4 iFinA; attribute vec4 iFinB; attribute float aFin;' : ''}
 `;
     sh.vertexShader = head + sh.vertexShader;
 
@@ -111,6 +115,36 @@ vec3 fishBend(vec3 p, inout vec3 n, float finU, float finTail) {
   n = vec3(c * n.x - si * n.z, n.y, si * n.x + c * n.z);
   return q;
 }
+${opts.solidFins ? `
+// a solid fin moving on its own (aFin = type + 0.98 u: 1 tail, 2 dorsal, 3 anal, 4 pelvic, 5 pectoral)
+vec3 finMotion(float code, vec3 p) {
+  float type = floor(code + 1e-3);
+  if (type < 0.5) return p;
+  float L = uWag.w, u = clamp((code - type) / 0.98, 0.0, 1.0), act = iFinA.z;
+  // every soft fin flickers at the rim: a small fast wave running out from the root
+  float flick = sin(iFinA.x * 2.3 - u * 4.0 + p.z * 11.0 / L + p.y * 7.0 / L) * pow(u, 1.6) * L * (0.004 + 0.012 * act);
+  float side = p.x >= 0.0 ? 1.0 : -1.0;
+  if (type < 1.5) {
+    // tail: the rays fan out and close up, the rim flutters
+    p.y *= 1.0 + iFinA.w * 0.14 * u;
+    p.x += flick * 1.4 + sin(iFinA.x * 1.7 - abs(p.y) * 9.0 / L) * u * u * L * 0.008 * act;
+  } else if (type < 3.5) {
+    // dorsal (2) and anal (3): a wave runs front to back along the fin; folded down and back at speed
+    float s = type < 2.5 ? 1.0 : -1.0, fold = 1.0 - iFinA.y, h = abs(p.y);
+    p.y -= s * fold * 0.45 * u * h;
+    p.z -= fold * 0.3 * u * h;
+    p.x += sin(iFinA.x - p.z * 14.0 / L + s * 0.9) * pow(u, 1.3) * L * (0.008 + 0.022 * act) + flick;
+  } else if (type < 4.5) {
+    // pelvic pair: beating out and in by turns, spread wide to brake and hover
+    p.x += side * u * L * (0.03 * iFinB.z + 0.012 * act * sin(iFinB.w + side * 1.3)) + flick * 0.5;
+  } else {
+    // pectoral left in the body: sculls out and back with its side's angle (left = -x)
+    float a = side < 0.0 ? iFinB.x : iFinB.y;
+    p.x += side * u * L * 0.08 * a + flick * 0.5;
+    p.z -= u * L * 0.04 * abs(a);
+  }
+  return p;
+}` : ''}
 void main() {`);
       sh.vertexShader = sh.vertexShader.replace(
         '#include <beginnormal_vertex>',
@@ -120,7 +154,7 @@ void main() {`);
         if (aPect.x != 0.0) {
           // pectoral fin paddling: rotate around the fin root (Y), then tilt (X)
           vec3 p = fishPos - aPect.yzw;
-          float a = aPect.x * uPect;
+          float a = aPect.x * uPect${opts.solidFins ? ' + aPect.x * (aPect.x < 0.0 ? iFinB.x : iFinB.y)' : ''};
           mat2 ry = mat2(cos(a), -sin(a), sin(a), cos(a)), rx = mat2(cos(0.3), sin(0.3), -sin(0.3), cos(0.3));
           p.xz = ry * p.xz; p.yz = rx * p.yz;
           objectNormal.xz = ry * objectNormal.xz; objectNormal.yz = rx * objectNormal.yz;
@@ -130,6 +164,7 @@ void main() {`);
         // fin atlas: left half of U = caudal fin, right half = other fins; U runs root -> tip
         float finTail = step(uv.x, 0.5);
         float finU = finTail > 0.5 ? uv.x * 2.0 : uv.x * 2.0 - 1.0;` : 'float finU = -1.0, finTail = 0.0;'}
+        ${opts.solidFins ? 'fishPos = finMotion(aFin, fishPos);' : ''}
         fishPos = fishBend(fishPos, objectNormal, finU, finTail);`
       );
       sh.vertexShader = sh.vertexShader.replace(

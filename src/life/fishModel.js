@@ -238,10 +238,19 @@ export class FishBatch {
     this.glow = sp.glow ? { value: 0 } : null;
     this.iWag = new THREE.InstancedBufferAttribute(new Float32Array(cap * 4), 4).setUsage(THREE.DynamicDrawUsage);
     this.iPect = new THREE.InstancedBufferAttribute(new Float32Array(cap), 1).setUsage(THREE.DynamicDrawUsage);
+    this.iFinA = new THREE.InstancedBufferAttribute(new Float32Array(cap * 4), 4).setUsage(THREE.DynamicDrawUsage);
+    this.iFinB = new THREE.InstancedBufferAttribute(new Float32Array(cap * 4), 4).setUsage(THREE.DynamicDrawUsage);
+    // the solid fins of a sculpted model (marked by tools/fin_map.py) move on their own
+    const solidFins = !A.fins && !!A.body.attributes.uv1;
     const withColor = (g, color) => {
       const n = g.attributes.position.count, arr = new Float32Array(n * 3), c = new THREE.Color(color);
       for (let i = 0; i < n; i++) c.toArray(arr, i * 3);
       g.setAttribute('color', new THREE.BufferAttribute(arr, 3));
+      // which fin a vertex is on (uv1.x, see fin_map.py); nothing for the eyes
+      const fin = new Float32Array(n), uv1 = g.attributes.uv1;
+      if (uv1) for (let i = 0; i < n; i++) fin[i] = uv1.getX(i);
+      g.setAttribute('aFin', new THREE.BufferAttribute(fin, 1));
+      if (uv1) g.deleteAttribute('uv1');
       return g;
     };
 
@@ -264,13 +273,14 @@ export class FishBatch {
     });
     const bodyGeo = mergeGeometries(parts);
     bodyGeo.setAttribute('iWag', this.iWag);
+    if (solidFins) { bodyGeo.setAttribute('iFinA', this.iFinA); bodyGeo.setAttribute('iFinB', this.iFinB); }
     const bodyMat = patchMaterial(new THREE.MeshPhysicalMaterial({
       map: A.bodyMap, normalMap: A.bodyNormal, normalScale: new THREE.Vector2(0.7, 0.7), vertexColors: true,
       roughness: 0.3, metalness: 0.05, clearcoat: 0.7, clearcoatRoughness: 0.18,
       iridescence: sp.irid || 0, iridescenceIOR: 1.35, iridescenceThicknessRange: [200, 600],
       sheen: 0.4, sheenColor: new THREE.Color('#ffffff'), sheenRoughness: 0.5,
       emissive: sp.glow ? new THREE.Color('#8fe9ff') : new THREE.Color('#000'), emissiveIntensity: sp.glow ? 0.4 : 0,
-    }), { caustics: 0.55, wag: true, instanced: true, glow: this.glow });
+    }), { caustics: 0.55, wag: true, instanced: true, glow: this.glow, solidFins });
 
     this.body = new THREE.InstancedMesh(bodyGeo, bodyMat, cap);
     this.body.castShadow = true;
@@ -336,11 +346,13 @@ export class FishBatch {
       const W = f.wag.value;
       this.iWag.setXYZW(i, W.x, W.y, W.z, W.w);
       this.iPect.setX(i, f.pect.value);
+      this.iFinA.setXYZW(i, f.finA.x, f.finA.y, f.finA.z, f.finA.w);
+      this.iFinB.setXYZW(i, f.finB.x, f.finB.y, f.finB.z, f.finB.w);
     }
     for (const m of this.meshes) {
       m.count = n;
       m.instanceMatrix.needsUpdate = true;
     }
-    this.iWag.needsUpdate = this.iPect.needsUpdate = true;
+    this.iWag.needsUpdate = this.iPect.needsUpdate = this.iFinA.needsUpdate = this.iFinB.needsUpdate = true;
   }
 }

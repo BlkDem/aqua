@@ -7,7 +7,7 @@ import { rand, pick, clamp, mulberry32 } from '../fx/shaderPatch.js';
 
 const V = () => new THREE.Vector3();
 const _a = V(), _b = V(), _c = V(), _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _q2 = new THREE.Quaternion();
-const UP = new THREE.Vector3(0, 1, 0), ZERO = new THREE.Vector3();
+const UP = new THREE.Vector3(0, 1, 0), ZERO = new THREE.Vector3(), X_AXIS = new THREE.Vector3(1, 0, 0), Z_AXIS = new THREE.Vector3(0, 0, 1);
 const PICK = new THREE.MeshBasicMaterial();
 
 export const BOUNDS = { x: 5.55, zMin: -2.05, zMax: 2.05, yMax: 5.35 };
@@ -78,6 +78,12 @@ export class Fish {
     this.gulp = 0;
     this.flare = 0;
     this.speedMul = 1;
+    // the solid fins (shader iFinA, iFinB): fin phase, dorsal/anal erect, fin activity, tail spread;
+    // left and right pectoral extra angle, pelvic spread, pelvic beat phase
+    this.finA = new THREE.Vector4(R() * 10, 1, 0.5, 0);
+    this.finB = new THREE.Vector4(0, 0, 0, R() * 10);
+    this.erect = 1; this.finAct = 0.5; this.tailSpread = 0; this.pelvic = 0;
+    this.wobPhase = Array.from({ length: 9 }, () => R() * 6.283);
     // --- needs & mind ---
     this.hunger = rand(0.2, 0.6);
     this.fear = 0;
@@ -877,22 +883,66 @@ export class Fish {
     this.pos.y = clamp(this.pos.y, hf, ceil + 0.05);
   }
 
+  /** A smooth, never-repeating sway in about -1..1: three incommensurate sines. */
+  wobble(k, f) {
+    const t = this.eco.time, ph = this.wobPhase;
+    return 0.55 * Math.sin(t * f + ph[k * 3]) + 0.3 * Math.sin(t * f * 1.73 + ph[k * 3 + 1]) + 0.15 * Math.sin(t * f * 2.91 + ph[k * 3 + 2]);
+  }
+
+  /**
+   * The other fins. Pectorals: the one inside a turn opens out, and holding station they stroke
+   * by turns and answer the body's sway. Dorsal and anal fins stand up when slow, curious or
+   * showing off and fold down at speed or while gliding. The tail fans out to brake, the
+   * pelvic pair spreads to brake and hover. All of them stay busier the slower the fish goes.
+   */
+  animateFins(dt, rel, still, sleeping, rollJ, yawJ) {
+    const S = this.sp.swim;
+    const turnN = clamp(this.yawRate / (S.turn * 0.6), -1, 1);
+    const steady = rollJ * 5 + yawJ * 3;
+    const alt = (0.08 + 0.2 * this.pectS) * still;
+    const l = Math.max(0, -turnN) * 0.5 - steady + alt * Math.sin(this.finPhase * 0.5);
+    const r = Math.max(0, turnN) * 0.5 + steady + alt * Math.sin(this.finPhase * 0.5 + Math.PI);
+    const showing = this.flare > 0.05 || ['DEFEND', 'STANDOFF', 'COURT', 'CURIOUS', 'INVESTIGATE'].includes(this.state);
+    let erectT = 1 - 0.7 * clamp((rel - 0.5) / 1.1, 0, 1);
+    if (this.burst <= 0 && this.tail < 0.25 && rel > 0.9) erectT = Math.min(erectT, 0.35);   // gliding
+    if (showing) erectT = 1;
+    if (sleeping) erectT = 0.55;
+    const actT = (0.35 + 0.6 * still + 0.25 * this.pectB + 0.3 * this.flare) * (sleeping ? 0.35 : 1);
+    const spreadT = clamp(0.5 * still + this.pectB + 0.5 * this.flare - 0.6 * clamp(rel - 0.8, 0, 1), -0.6, 1);
+    const pelvicT = clamp(0.55 * still + 0.9 * this.pectB + 0.3 * Math.abs(turnN) + 0.4 * this.flare, 0, 1);
+    const k = Math.min(1, dt * 3);
+    this.erect += (erectT - this.erect) * k;
+    this.finAct += (actT - this.finAct) * Math.min(1, dt * 2);
+    this.tailSpread += (spreadT - this.tailSpread) * k;
+    this.pelvic += (pelvicT - this.pelvic) * k;
+    this.finA.set(this.finA.x + dt * (5 + 5 * this.finAct), this.erect, this.finAct, this.tailSpread);
+    this.finB.set(l, r, this.pelvic, this.finB.w + dt * (2.5 + 4 * this.finAct));
+  }
+
   // ------------------------------------------------------------------ animate
   animate(dt) {
     const sp = this.sp, S = sp.swim;
     const speed = this.vel.length();
+    const rel = speed / S.cruise;
+    const sleeping = this.state === 'REST' && this.eco.night > 0.6 && !sp.nocturnal;
     _m.lookAt(this.heading, ZERO, UP);
     _q.setFromRotationMatrix(_m);
     let roll = clamp(-this.yawRate * 0.12, -0.5, 0.5);
-    if (this.state === 'REST' && this.eco.night > 0.6 && !sp.nocturnal) roll += 0.12;
-    _q2.setFromAxisAngle(new THREE.Vector3(0, 0, 1), roll);
-    _q.multiply(_q2);
+    if (sleeping) roll += 0.12;
+    // a fish never just hangs in the water: holding still it keeps rolling, pitching and yawing
+    // a little (more when slow, less when it has way on) and its fins keep catching it
+    const still = clamp(1 - rel * 1.4, 0, 1);
+    const wob = (0.35 + 0.65 * still) * (sleeping ? 0.35 : 1) * (0.7 + 0.6 * (this.p.activity ?? 0.5));
+    const slowness = 0.6 + 0.8 / (1 + sp.len);   // small fish sway quicker
+    const rollJ = this.wobble(0, 0.9 * slowness) * 0.06 * wob;
+    const pitchJ = this.wobble(1, 0.7 * slowness) * 0.045 * wob;
+    const yawJ = this.wobble(2, 0.6 * slowness) * 0.05 * wob;
+    _q.multiply(_q2.setFromAxisAngle(UP, yawJ)).multiply(_q2.setFromAxisAngle(X_AXIS, pitchJ)).multiply(_q2.setFromAxisAngle(Z_AXIS, roll + rollJ));
     this.root.quaternion.slerp(_q, 1 - Math.exp(-10 * dt));
     this.root.position.copy(this.pos);
 
     // tail undulation: the same intensity that produces thrust. Frequency grows with intensity
     // (and so with speed); amplitude saturates. Turning on the spot takes a few tail sweeps too.
-    const rel = speed / S.cruise;
     const spin = Math.min(1, Math.abs(this.yawRate) / (S.turn * 0.6)) * 0.5 * clamp(1 - rel, 0, 1);
     const act = Math.max(this.tail, spin);
     // Bainbridge: tail-beat frequency f ≈ 1.33·(1 + U/L) Hz, it never drops much below ~1.3 Hz;
@@ -901,7 +951,7 @@ export class Fish {
     let amp = S.amp * sp.len * (0.15 + 0.85 * Math.min(act / 0.6, 1));
     if (S.wiggle) amp *= 1.2;
     if (this.flare > 0) { freq *= 1.6; amp *= 1 + this.flare * 0.8; this.flare = Math.max(0, this.flare - dt * 0.7); }
-    if (this.state === 'REST' && this.eco.night > 0.6 && !sp.nocturnal) { freq *= 0.4; amp *= 0.5; }
+    if (sleeping) { freq *= 0.4; amp *= 0.5; }
     this.phase += dt * freq;
     const W = this.wag.value;
     W.x = this.phase;
@@ -915,6 +965,7 @@ export class Fish {
     const scull = this.pectS, brake = this.pectB;
     this.finPhase += dt * (4 + scull * 6);
     this.pect.value = 0.35 + hover * 0.25 + brake * 0.6 + Math.sin(this.finPhase) * (0.12 + scull * 0.45) + this.flare * 0.5;
+    this.animateFins(dt, rel, still, sleeping, rollJ, yawJ);
     // growing up: the body follows the age-dependent size smoothly
     if (Math.abs(this.targetScale - this.scale) > 1e-4) {
       this.scale += (this.targetScale - this.scale) * Math.min(1, dt * 0.5);
