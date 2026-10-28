@@ -899,9 +899,9 @@ export class Fish {
     const S = this.sp.swim;
     const turnN = clamp(this.yawRate / (S.turn * 0.6), -1, 1);
     const steady = rollJ * 5 + yawJ * 3;
-    const alt = (0.08 + 0.2 * this.pectS) * still;
-    const l = Math.max(0, -turnN) * 0.5 - steady + alt * Math.sin(this.finPhase * 0.5);
-    const r = Math.max(0, turnN) * 0.5 + steady + alt * Math.sin(this.finPhase * 0.5 + Math.PI);
+    const alt = (0.2 + 0.35 * this.pectS) * (0.3 + 0.7 * still);
+    const l = Math.max(0, -turnN) * 0.7 - steady + alt * Math.sin(this.finPhase * 0.5);
+    const r = Math.max(0, turnN) * 0.7 + steady + alt * Math.sin(this.finPhase * 0.5 + Math.PI);
     const showing = this.flare > 0.05 || ['DEFEND', 'STANDOFF', 'COURT', 'CURIOUS', 'INVESTIGATE'].includes(this.state);
     let erectT = 1 - 0.7 * clamp((rel - 0.5) / 1.1, 0, 1);
     if (this.burst <= 0 && this.tail < 0.25 && rel > 0.9) erectT = Math.min(erectT, 0.35);   // gliding
@@ -933,10 +933,10 @@ export class Fish {
     // a little (more when slow, less when it has way on) and its fins keep catching it
     const still = clamp(1 - rel * 1.4, 0, 1);
     const wob = (0.35 + 0.65 * still) * (sleeping ? 0.35 : 1) * (0.7 + 0.6 * (this.p.activity ?? 0.5));
-    const slowness = 0.6 + 0.8 / (1 + sp.len);   // small fish sway quicker
-    const rollJ = this.wobble(0, 0.9 * slowness) * 0.06 * wob;
-    const pitchJ = this.wobble(1, 0.7 * slowness) * 0.045 * wob;
-    const yawJ = this.wobble(2, 0.6 * slowness) * 0.05 * wob;
+    const slowness = 1.0 + 1.3 / (1 + sp.len);   // small fish sway quicker
+    const rollJ = this.wobble(0, 0.9 * slowness) * 0.1 * wob;
+    const pitchJ = this.wobble(1, 0.7 * slowness) * 0.07 * wob;
+    const yawJ = this.wobble(2, 0.6 * slowness) * 0.08 * wob;
     _q.multiply(_q2.setFromAxisAngle(UP, yawJ)).multiply(_q2.setFromAxisAngle(X_AXIS, pitchJ)).multiply(_q2.setFromAxisAngle(Z_AXIS, roll + rollJ));
     this.root.quaternion.slerp(_q, 1 - Math.exp(-10 * dt));
     this.root.position.copy(this.pos);
@@ -964,7 +964,7 @@ export class Fish {
     this.pectB += (this.pectBrake - this.pectB) * Math.min(1, dt * 3);
     const scull = this.pectS, brake = this.pectB;
     this.finPhase += dt * (4 + scull * 6);
-    this.pect.value = 0.35 + hover * 0.25 + brake * 0.6 + Math.sin(this.finPhase) * (0.12 + scull * 0.45) + this.flare * 0.5;
+    this.pect.value = 0.35 + hover * 0.25 + brake * 0.6 + Math.sin(this.finPhase) * (0.2 + scull * 0.5) + this.flare * 0.5;
     this.animateFins(dt, rel, still, sleeping, rollJ, yawJ);
     // growing up: the body follows the age-dependent size smoothly
     if (Math.abs(this.targetScale - this.scale) > 1e-4) {
