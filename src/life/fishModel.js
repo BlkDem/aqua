@@ -272,7 +272,25 @@ export class FishBatch {
       emissive: sp.glow ? new THREE.Color('#8fe9ff') : new THREE.Color('#000'), emissiveIntensity: sp.glow ? 0.4 : 0,
     }), { caustics: 0.55, wag: true, instanced: true, glow: this.glow });
 
-    // fins: fixed fins + pectorals (paddled in the shader around their pivots)
+    this.body = new THREE.InstancedMesh(bodyGeo, bodyMat, cap);
+    this.body.castShadow = true;
+    this.meshes = [this.body];
+    // fins: fixed fins + pectorals (paddled in the shader around their pivots);
+    // an imported model has its fins in the body
+    if (A.fins) this.meshes.push(this.buildFins(sp, A, cap));
+    for (const m of this.meshes) {
+      m.count = 0;
+      m.frustumCulled = false;
+      m.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      m.setColorAt(0, _c.set(1, 1, 1));
+      scene.add(m);
+    }
+    // an invisible stand-in each fish carries for clicking and hovering
+    const r = Math.max(sp.height, sp.width) * 0.45;
+    this.pickGeo = new THREE.CapsuleGeometry(r, Math.max(0.01, L - 2 * r), 4, 8).rotateX(Math.PI / 2);
+  }
+
+  buildFins(sp, A, cap) {
     const fixed = A.fins.clone();
     fixed.setAttribute('aPect', new THREE.BufferAttribute(new Float32Array(fixed.attributes.position.count * 4), 4));
     const finGeos = [fixed];
@@ -291,21 +309,9 @@ export class FishBatch {
       emissive: sp.glow ? new THREE.Color('#8fb6ff') : new THREE.Color('#000'), emissiveIntensity: sp.glow ? 0.6 : 0,
     }), { caustics: 0.4, wag: true, instanced: true, glow: this.glow, pect: true });
     finMat.forceSinglePass = true;
-
-    this.body = new THREE.InstancedMesh(bodyGeo, bodyMat, cap);
-    this.fins = new THREE.InstancedMesh(finGeo, finMat, cap);
-    for (const m of [this.body, this.fins]) {
-      m.count = 0;
-      m.frustumCulled = false;
-      m.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-      m.setColorAt(0, _c.set(1, 1, 1));
-      scene.add(m);
-    }
-    this.body.castShadow = true;
-    this.fins.renderOrder = 5;
-    // an invisible stand-in each fish carries for clicking and hovering
-    const r = Math.max(sp.height, sp.width) * 0.45;
-    this.pickGeo = new THREE.CapsuleGeometry(r, Math.max(0.01, L - 2 * r), 4, 8).rotateX(Math.PI / 2);
+    const fins = new THREE.InstancedMesh(finGeo, finMat, cap);
+    fins.renderOrder = 5;
+    return fins;
   }
 
   add(f, tint) {
@@ -313,9 +319,10 @@ export class FishBatch {
     if (i >= this.cap) { console.warn('fish batch full', f.sp.id); return; }
     this.fish.push(f);
     _c.setRGB(...tint);
-    this.body.setColorAt(i, _c);
-    this.fins.setColorAt(i, _c);
-    this.body.instanceColor.needsUpdate = this.fins.instanceColor.needsUpdate = true;
+    for (const m of this.meshes) {
+      m.setColorAt(i, _c);
+      m.instanceColor.needsUpdate = true;
+    }
   }
 
   /** Upload where every fish is and how its body and fins move this frame. */
@@ -325,14 +332,15 @@ export class FishBatch {
       const f = this.fish[i];
       if (f.hidden) _m.copy(_hidden);
       else { f.root.updateMatrix(); _m.copy(f.root.matrix); }
-      this.body.setMatrixAt(i, _m);
-      this.fins.setMatrixAt(i, _m);
+      for (const m of this.meshes) m.setMatrixAt(i, _m);
       const W = f.wag.value;
       this.iWag.setXYZW(i, W.x, W.y, W.z, W.w);
       this.iPect.setX(i, f.pect.value);
     }
-    this.body.count = this.fins.count = n;
-    this.body.instanceMatrix.needsUpdate = this.fins.instanceMatrix.needsUpdate = true;
+    for (const m of this.meshes) {
+      m.count = n;
+      m.instanceMatrix.needsUpdate = true;
+    }
     this.iWag.needsUpdate = this.iPect.needsUpdate = true;
   }
 }

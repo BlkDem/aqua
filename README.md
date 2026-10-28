@@ -68,6 +68,7 @@ tools/blender/
   make_decor.py        декор и кораллы      → public/models/decor (процедурные материалы запекаются в текстуры)
   make_plants.py       растения и мох       → public/models/plants
   make_critters.py     краб и улитки        → public/models/critters (части-суставы, общий запечённый атлас)
+tools/import_fish.py   готовая модель рыбы (один меш с текстурой, например из Tripo) → public/models/fish
 ```
 
 Модели пересобираются в Blender без интерфейса, например:
@@ -76,6 +77,12 @@ tools/blender/
 blender -b -P tools/blender/make_decor.py -- public/models/decor castle ship
 blender -b -P tools/blender/make_plants.py -- public/models/plants
 blender -b -P tools/blender/make_critters.py -- public/models/critters crab snail-mystery
+```
+
+Готовые модели рыб (сейчас — золотая рыбка) подключаются без Blender: скрипт разворачивает модель носом вперёд, подгоняет размер так, чтобы хвост начинался там, где его изгибает шейдер (`--peduncle` — доля длины от носа), упрощает меш и уменьшает текстуры. Глаза и плавники остаются нарисованными в текстуре модели.
+
+```bash
+python3 tools/import_fish.py "orange goldfish 3d model.glb" goldfish --nose +x --peduncle 0.564
 ```
 
 Запекание декора идёт в Cycles; если в системе есть GPU (OptiX/CUDA/HIP), он используется автоматически.

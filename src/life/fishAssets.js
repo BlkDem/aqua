@@ -1,8 +1,9 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
-// Fish models generated in Blender (tools/blender/make_fish.py). Species without a model
-// fall back to the procedural builder.
+// Fish models generated in Blender (tools/blender/make_fish.py) or brought in ready-made
+// (tools/import_fish.py: a lone Body with the eyes and fins painted on, no Fins/Pect/Eye parts).
+// Species without a model fall back to the procedural builder.
 export const ASSETS = {};
 
 function bakedGeometry(mesh) {
@@ -31,10 +32,10 @@ export async function loadFishAssets(ids, onProgress) {
         body: bakedGeometry(nodes.Body),
         bodyMap: nodes.Body.material.map,
         bodyNormal: nodes.Body.material.normalMap,
-        fins: bakedGeometry(nodes.Fins),
-        finMap: nodes.Fins.material.map,
-        pects: [pect(nodes.PectL), pect(nodes.PectR)],
-        eyes: [eye(nodes.EyeL), eye(nodes.EyeR)],
+        fins: nodes.Fins ? bakedGeometry(nodes.Fins) : null,
+        finMap: nodes.Fins?.material.map,
+        pects: nodes.PectL ? [pect(nodes.PectL), pect(nodes.PectR)] : [],
+        eyes: nodes.EyeL ? [eye(nodes.EyeL), eye(nodes.EyeR)] : [],
       };
       for (const t of [ASSETS[id].bodyMap, ASSETS[id].finMap]) if (t) t.anisotropy = 8;
     } catch (e) {
