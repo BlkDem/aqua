@@ -8,11 +8,15 @@ in its own texture, so the aquarium adds no cartoon eyes and no separate fins.
     python3 tools/import_fish.py <model.glb> <species> --nose +x --peduncle 0.564
 
 --nose      which axis of the source model the head points along
+--up        which axis is up (-z for a model sculpted belly up, as some Blender exports are)
+--variants  colour variants, one GLB each (<species>-<k>.glb): the texture's hue turned so that
+            --ref (the model's own colour) becomes each variant's
 --peduncle  where the tail starts, as a fraction of the model's length counted from the nose
 --tris      triangle budget after simplification (default 20000)
 --tex       texture size (default 1024)
+--straighten  pull a tail sculpted bent to one side back into line
 """
-import argparse, io, json, os, struct, subprocess, sys, tempfile
+import argparse, colorsys, io, json, os, struct, subprocess, sys, tempfile
 import numpy as np
 from PIL import Image
 
@@ -66,8 +70,11 @@ def read_glb(path):
             acc(at["TEXCOORD_0"]).copy(), acc(prim["indices"]).astype(np.uint32), base, normal)
 
 
-def orient(P, N, nose):
-    """Rotate about Y so the head points along +Z (keeps handedness)."""
+def orient(P, N, nose, up):
+    """Stand the model up (+Y), then rotate about Y so the head points along +Z (keeps handedness)."""
+    if up == "-z":   # a quarter turn about X: (x, y, z) -> (x, -z, y)
+        U = np.array([[1, 0, 0], [0, 0, -1], [0, 1, 0]], float)
+        P, N = P @ U.T, N @ U.T
     sign, axis = (1 if nose[0] == "+" else -1), nose[1]
     if axis == "x":   # (x, y, z) -> (-z, y, x), then flip if the head was on -X
         R = np.array([[0, 0, -1], [0, 1, 0], [1, 0, 0]], float)
@@ -86,6 +93,26 @@ def simplify(P, I, tris):
         subprocess.run(["node", "--input-type=module", "-e", SIMPLIFY_JS, *paths, str(tris * 3)],
                        check=True, cwd=ROOT)
         return np.fromfile(paths[2], np.uint32)
+
+
+def hue_turned(rgb, turn):
+    """rgb (h, w, 3) floats with every hue turned by `turn` (0..1); greys stay grey."""
+    mx, mn = rgb.max(-1), rgb.min(-1)
+    d = mx - mn
+    s = np.where(mx > 0, d / np.maximum(mx, 1e-6), 0)
+    r, g, b = rgb[..., 0], rgb[..., 1], rgb[..., 2]
+    dd = np.maximum(d, 1e-6)
+    h = np.where(mx == r, (g - b) / dd % 6, np.where(mx == g, (b - r) / dd + 2, (r - g) / dd + 4)) / 6
+    h = (h + turn) % 1.0
+    i = np.floor(h * 6).astype(int) % 6
+    f = h * 6 - np.floor(h * 6)
+    p, q, t = mx * (1 - s), mx * (1 - s * f), mx * (1 - s * (1 - f))
+    sel = [i == k for k in range(6)]
+    return np.stack([np.select(sel, c) for c in ((mx, q, p, p, t, mx), (t, mx, mx, q, p, p), (p, p, t, mx, mx, q))], -1)
+
+
+def hue(hexs):
+    return colorsys.rgb_to_hsv(*(int(hexs[i:i + 2], 16) / 255 for i in (1, 3, 5)))[0]
 
 
 def jpeg(im, size, quality):
@@ -145,14 +172,30 @@ def main():
     ap.add_argument("src")
     ap.add_argument("species")
     ap.add_argument("--nose", default="+x", choices=["+x", "-x", "+z", "-z"])
+    ap.add_argument("--up", default="+y", choices=["+y", "-z"])
+    ap.add_argument("--ref", default=None)
+    ap.add_argument("--variants", nargs="*", default=None)
     ap.add_argument("--peduncle", type=float, required=True)
+    ap.add_argument("--straighten", action="store_true")
     ap.add_argument("--tris", type=int, default=20000)
     ap.add_argument("--tex", type=int, default=1024)
     ap.add_argument("--out", default=None)
     a = ap.parse_args()
 
     P, N, UV, I, base, normal = read_glb(a.src)
-    P, N = orient(P, N, a.nose)
+    P, N = orient(P, N, a.nose, a.up)
+    if a.straighten:
+        # a sculpt whose tail is bent to one side: the middle of each slice along the body back onto x = 0
+        edges = np.arange(P[:, 2].min(), P[:, 2].max() + 0.02, 0.02)
+        mids, centers = [], []
+        for z0, z1 in zip(edges[:-1], edges[1:]):
+            sl = P[(P[:, 2] >= z0) & (P[:, 2] < z1)]
+            if len(sl):
+                mids.append((z0 + z1) / 2)
+                centers.append(sl[:, 0].mean())
+        centers = np.convolve(np.pad(centers, 2, mode="edge"), np.ones(5) / 5, mode="valid")
+        P = P.copy()
+        P[:, 0] -= np.interp(P[:, 2], mids, centers)
     lo, hi = P.min(0), P.max(0)
     nose_z = hi[2]
     ped_z = hi[2] - a.peduncle * (hi[2] - lo[2])
@@ -168,11 +211,19 @@ def main():
     P, N, UV = P[used], N[used], UV[used]
     N /= np.linalg.norm(N, axis=1, keepdims=True)
 
-    out = a.out or os.path.join(ROOT, "public/models/fish", a.species + ".glb")
-    write_glb(out, P, N, UV, I, jpeg(base, a.tex, 88), normal and jpeg(normal, a.tex, 92))
+    normal_jpg = normal and jpeg(normal, a.tex, 92)
+    base = base.convert("RGB").resize((a.tex, a.tex), Image.LANCZOS)
     ext = P.max(0) - P.min(0)
-    print(f"wrote {out}: {len(P)} vertices, {len(I) // 3} triangles, {os.path.getsize(out) // 1024} KB, "
-          f"size {ext[0]:.2f} x {ext[1]:.2f} x {ext[2]:.2f}")
+    for k, col in enumerate(a.variants or [None]):
+        img = base
+        if col and col != a.ref:
+            px = hue_turned(np.asarray(base, np.float32) / 255, hue(col) - hue(a.ref))
+            img = Image.fromarray((px * 255 + 0.5).clip(0, 255).astype(np.uint8))
+        name = f"{a.species}-{k}" if col else a.species
+        out = a.out or os.path.join(ROOT, "public/models/fish", name + ".glb")
+        write_glb(out, P, N, UV, I, jpeg(img, a.tex, 88), normal_jpg)
+        print(f"wrote {out}: {len(P)} vertices, {len(I) // 3} triangles, {os.path.getsize(out) // 1024} KB, "
+              f"size {ext[0]:.2f} x {ext[1]:.2f} x {ext[2]:.2f}")
 
 
 if __name__ == "__main__":

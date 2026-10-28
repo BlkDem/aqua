@@ -634,7 +634,7 @@ def main():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
     out_dir = argv[0] if argv else os.path.abspath("public/models/fish")
     # these come ready-made through tools/import_fish.py; name one explicitly to rebuild it here
-    imported = {"goldfish"}
+    imported = {"goldfish", "betta", "cichlid", "angelfish", "barb", "cory", "rainbow", "discus", "clown", "guppy", "neon"}
     names = argv[1:] or [n for n in SPECIES if n not in imported]
     os.makedirs(out_dir, exist_ok=True)
     for n in names:

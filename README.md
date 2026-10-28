@@ -69,6 +69,7 @@ tools/blender/
   make_plants.py       растения и мох       → public/models/plants
   make_critters.py     краб и улитки        → public/models/critters (части-суставы, общий запечённый атлас)
 tools/import_fish.py   готовая модель рыбы (один меш с текстурой, например из Tripo) → public/models/fish
+tools/import_crab.py   готовая модель краба → public/models/critters/crab.glb, разрезанная на суставы (ноги, клешни, глаза)
 ```
 
 Модели пересобираются в Blender без интерфейса, например:
@@ -79,10 +80,26 @@ blender -b -P tools/blender/make_plants.py -- public/models/plants
 blender -b -P tools/blender/make_critters.py -- public/models/critters crab snail-mystery
 ```
 
-Готовые модели рыб (сейчас — золотая рыбка) подключаются без Blender: скрипт разворачивает модель носом вперёд, подгоняет размер так, чтобы хвост начинался там, где его изгибает шейдер (`--peduncle` — доля длины от носа), упрощает меш и уменьшает текстуры. Глаза и плавники остаются нарисованными в текстуре модели.
+Готовые модели рыб (все, кроме лунной рыбы) подключаются без Blender: скрипт ставит модель спиной вверх (`--up=-z` для модели, лежащей брюхом вверх) и носом вперёд, подгоняет размер так, чтобы хвост начинался там, где его изгибает шейдер (`--peduncle` — доля длины от носа), упрощает меш и уменьшает текстуры. Глаза и плавники остаются нарисованными в текстуре модели. `--variants` делает по модели на каждый окрас, поворачивая оттенок текстуры от `--ref`; `--straighten` выпрямляет хвост, вылепленный изогнутым вбок.
 
 ```bash
 python3 tools/import_fish.py "orange goldfish 3d model.glb" goldfish --nose +x --peduncle 0.564
+python3 tools/import_fish.py ca5ed81c3251a08f15cc3ac957224fbe.glb betta --up=-z --peduncle 0.5706
+python3 tools/import_fish.py 5e397364550eaa3053cdbec0e5c196e4.glb cichlid --up=-z --peduncle 0.7494 --ref "#ff5a1a" --variants "#ff5a1a" "#ffd21f"
+python3 tools/import_fish.py 529fec33468e891fd614debb6bc0e6cf.glb angelfish --up=-z --peduncle 0.635
+python3 tools/import_fish.py 529f45f9adc6ca50bee3f4ad32806952.glb barb --up=-z --peduncle 0.773
+python3 tools/import_fish.py "fish 3d model.glb" cory --peduncle 0.7705
+python3 tools/import_fish.py 3e6d0112b3480e9978c55a903008a82b.glb rainbow --up=-z --peduncle 0.8615
+python3 tools/import_fish.py d35dee4bf297ea65c44eef958c67f3a7.glb discus --up=-z --peduncle 0.791 --ref "#ff6a1f" --variants "#ff6a1f" "#2ad4c8"
+python3 tools/import_fish.py "clownfish 3d model.glb" clown --peduncle 0.7551
+python3 tools/import_fish.py "colorful fish 3d model (1).glb" neon --nose=-x --peduncle 0.7229
+python3 tools/import_fish.py "colorful fish 3d model.glb" guppy --peduncle 0.6131 --straighten --ref "#ff6a3d" --variants "#ff6a3d" "#ffb21f" "#3f8cff" "#ff3fa4" "#8a5bff" "#28d6a8" "#ff2f2f"
+```
+
+Краб так же: `tools/import_crab.py` отрезает от модели всё, что выходит за край панциря, и раскладывает это на 8 ног, 2 клешни и 2 глаза. Ногу узнаёт по касанию дна, слипшиеся ноги разводит по кончикам. Каждую конечность режет на сегменты по расстоянию вдоль неё, в клешне отдельно выделяет подвижный палец. Получается тот же набор узлов-суставов, что у краба из Blender, и этот же файл подходит Unity-версии.
+
+```bash
+python3 tools/import_crab.py "crab 3d model.glb"
 ```
 
 Запекание декора идёт в Cycles; если в системе есть GPU (OptiX/CUDA/HIP), он используется автоматически.
